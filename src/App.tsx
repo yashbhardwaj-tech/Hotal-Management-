@@ -1,6 +1,7 @@
 import LoginPage from "./components/LoginPage";
 import { Routes, Route } from "react-router";
 import Dashboard from "./components/Dashboard";
+import Admin from "./components/Admin";
 
 function App() {
     return (
@@ -8,6 +9,7 @@ function App() {
 <Routes>
     <Route path="/" element={<LoginPage />} />
     <Route path="/dashboard" element={<Dashboard />} />
+    <Route path="/admin" element={<Admin />} />
 </Routes>
     </div> );
 }

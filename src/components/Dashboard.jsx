@@ -1,58 +1,82 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router";
+import {
+  collection,
+  getDocs,
+  addDoc,
+  serverTimestamp,
+  query,
+  where,
+  onSnapshot,
+} from "firebase/firestore";
+import { auth } from "../firebase/firebase";
+import { db } from "../firebase/firebase";
 
 function Dashboard() {
   const [cart, setCart] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [foods, setFoods] = useState([]);
+  const navigate = useNavigate();
 
-  const foods = [
-    {
-      id: 1,
-      name: "Butter Chicken",
-      description: "Creamy tomato-based chicken curry",
-      price: 280,
-      category: "Main Course",
-      emoji: "🍗",
-    },
-    {
-      id: 2,
-      name: "Paneer Butter Masala",
-      description: "Paneer cooked in rich butter gravy",
-      price: 240,
-      category: "Main Course",
-      emoji: "🥘",
-    },
-    {
-      id: 3,
-      name: "Chicken Biryani",
-      description: "Aromatic basmati rice with chicken",
-      price: 320,
-      category: "Rice",
-      emoji: "🍛",
-    },
-    {
-      id: 4,
-      name: "Veg Biryani",
-      description: "Fragrant rice with fresh vegetables",
-      price: 220,
-      category: "Rice",
-      emoji: "🍚",
-    },
-    {
-      id: 5,
-      name: "Garlic Naan",
-      description: "Soft naan topped with garlic and butter",
-      price: 80,
-      category: "Breads",
-      emoji: "🫓",
-    },
-    {
-      id: 6,
-      name: "Fresh Lime Soda",
-      description: "Refreshing lime soda",
-      price: 70,
-      category: "Drinks",
-      emoji: "🥤",
-    },
-  ];
+  useEffect(() => {
+    if (!auth.currentUser) {
+      return;
+    }
+
+    const ordersQuery = query(
+      collection(db, "orders"),
+      where("userId", "==", auth.currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      ordersQuery,
+      (querySnapshot) => {
+        const ordersData = querySnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        setOrders(ordersData);
+      },
+      (error) => {
+        console.error("Error listening to orders:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const fetchFoods = async () => {
+      try {
+        console.log("Starting Firestore fetch...");
+
+        const querySnapshot = await getDocs(
+          collection(db, "foods")
+        );
+
+        console.log("Documents found:", querySnapshot.size);
+
+        const foodsData = querySnapshot.docs.map((doc) => {
+          console.log("Document:", doc.id, doc.data());
+
+          return {
+            id: doc.id,
+            ...doc.data(),
+          };
+        });
+
+        console.log("Foods data:", foodsData);
+
+        setFoods(foodsData);
+      } catch (error) {
+        console.error("FIRESTORE ERROR:", error);
+      }
+    };
+
+    fetchFoods();
+  }, []);
+
 
   // Add food to cart
   const addToCart = (food) => {
@@ -108,15 +132,49 @@ function Dashboard() {
   );
 
   // Place order
-  const placeOrder = () => {
+  const placeOrder = async () => {
     if (cart.length === 0) {
       alert("Please add some food to your cart.");
       return;
     }
 
-    alert(`Order placed successfully! Total: ₹${totalPrice}`);
+    if (!auth.currentUser) {
+      alert("Please login before placing an order.");
+      return;
+    }
 
-    setCart([]);
+    try {
+      const orderData = {
+        userId: auth.currentUser.uid,
+
+        items: cart.map((item) => ({
+          foodId: item.id,
+          name: item.Name,
+          price: item.price,
+          quantity: item.quantity,
+        })),
+
+        total: totalPrice,
+
+        status: "Pending",
+
+        createdAt: serverTimestamp(),
+      };
+
+      await addDoc(
+        collection(db, "orders"),
+        orderData
+      );
+
+      alert(`Order placed successfully! Total: ₹${totalPrice}`);
+
+      setCart([]);
+
+    } catch (error) {
+      console.error("Error placing order:", error);
+
+      alert("Failed to place order. Please try again.");
+    }
   };
 
   return (
@@ -146,6 +204,13 @@ function Dashboard() {
             </p>
           </div>
         </div>
+        <button
+          style={styles.menuButton}
+          onClick={() => navigate("/admin")}
+          title="Admin Panel"
+        >
+          ⋮
+        </button>
       </header>
 
 
@@ -203,55 +268,214 @@ function Dashboard() {
           {/* ================= FOOD CARDS ================= */}
           <div style={styles.foodGrid}>
 
-            {foods.map((food) => (
+            {foods
+              .filter((food) => food.available === true)
+              .map((food) => (
+                <div
+                  style={styles.foodCard}
+                  key={food.id}
+                >
+
+                  <div style={styles.foodImage}>
+                    <span style={styles.foodEmoji}>
+                      🍽️
+                    </span>
+                  </div>
+
+                  <div style={styles.foodContent}>
+
+                    <p style={styles.foodCategory}>
+                      {food.category}
+                    </p>
+
+                    <h3 style={styles.foodName}>
+                      {food.Name}
+                    </h3>
+
+                    <p style={styles.foodDescription}>
+                      {food.description}
+                    </p>
+
+                    <div style={styles.foodBottom}>
+
+                      <strong style={styles.price}>
+                        ₹{food.price}
+                      </strong>
+
+                      <button
+                        style={styles.addButton}
+                        onClick={() => addToCart(food)}
+                      >
+                        + Add
+                      </button>
+
+                    </div>
+
+                  </div>
+
+                </div>
+              ))}
+
+          </div>
+
+        </main>
+
+        <div style={styles.ordersSection}>
+
+          <h2 style={styles.ordersTitle}>
+            My Orders
+          </h2>
+
+          {orders.length === 0 ? (
+
+            <p style={styles.noOrders}>
+              You haven't placed any orders yet.
+            </p>
+
+          ) : (
+
+            orders.map((order) => (
+
               <div
-                style={styles.foodCard}
-                key={food.id}
+                key={order.id}
+                style={styles.customerOrderCard}
               >
 
-                <div style={styles.foodImage}>
-                  <span style={styles.foodEmoji}>
-                    {food.emoji}
+                <div style={styles.customerOrderHeader}>
+
+                  <div>
+                    <h3 style={styles.customerOrderTitle}>
+                      Order #{order.id}
+                    </h3>
+
+                    <p style={styles.customerOrderTotal}>
+                      Total: ₹{order.total}
+                    </p>
+                  </div>
+
+                  <span style={styles.statusBadge}>
+                    {order.status}
                   </span>
+
                 </div>
 
-                <div style={styles.foodContent}>
 
-                  <p style={styles.foodCategory}>
-                    {food.category}
-                  </p>
+                <div style={styles.customerOrderItems}>
 
-                  <h3 style={styles.foodName}>
-                    {food.name}
-                  </h3>
+                  {order.items.map((item) => (
 
-                  <p style={styles.foodDescription}>
-                    {food.description}
-                  </p>
-
-                  <div style={styles.foodBottom}>
-
-                    <strong style={styles.price}>
-                      ₹{food.price}
-                    </strong>
-
-                    <button
-                      style={styles.addButton}
-                      onClick={() => addToCart(food)}
+                    <div
+                      key={item.foodId}
+                      style={styles.customerOrderItem}
                     >
-                      + Add
-                    </button>
 
+                      <span>
+                        {item.name} × {item.quantity}
+                      </span>
+
+                      <span>
+                        ₹{item.price * item.quantity}
+                      </span>
+
+                    </div>
+
+                  ))}
+
+                </div>
+
+
+                {/* ORDER PROGRESS */}
+
+                <div style={styles.orderProgress}>
+
+                  <div style={styles.progressStep}>
+                    <div
+                      style={{
+                        ...styles.progressCircle,
+                        backgroundColor:
+                          ["Pending", "Preparing", "Ready", "Delivered"]
+                            .indexOf(order.status) >= 0
+                            ? "#d97706"
+                            : "#dddddd",
+                      }}
+                    >
+                      ✓
+                    </div>
+
+                    <span>Pending</span>
+                  </div>
+
+
+                  <div style={styles.progressLine}></div>
+
+
+                  <div style={styles.progressStep}>
+                    <div
+                      style={{
+                        ...styles.progressCircle,
+                        backgroundColor:
+                          ["Preparing", "Ready", "Delivered"]
+                            .indexOf(order.status) >= 0
+                            ? "#d97706"
+                            : "#dddddd",
+                      }}
+                    >
+                      ✓
+                    </div>
+
+                    <span>Preparing</span>
+                  </div>
+
+
+                  <div style={styles.progressLine}></div>
+
+
+                  <div style={styles.progressStep}>
+                    <div
+                      style={{
+                        ...styles.progressCircle,
+                        backgroundColor:
+                          ["Ready", "Delivered"]
+                            .indexOf(order.status) >= 0
+                            ? "#d97706"
+                            : "#dddddd",
+                      }}
+                    >
+                      ✓
+                    </div>
+
+                    <span>Ready</span>
+                  </div>
+
+
+                  <div style={styles.progressLine}></div>
+
+
+                  <div style={styles.progressStep}>
+                    <div
+                      style={{
+                        ...styles.progressCircle,
+                        backgroundColor:
+                          order.status === "Delivered"
+                            ? "#d97706"
+                            : "#dddddd",
+                      }}
+                    >
+                      ✓
+                    </div>
+
+                    <span>Delivered</span>
                   </div>
 
                 </div>
 
               </div>
-            ))}
 
-          </div>
+            ))
 
-        </main>
+          )}
+
+        </div>
 
 
         {/* ================= CART ================= */}
@@ -317,7 +541,7 @@ function Dashboard() {
                     <div style={styles.cartItemInfo}>
 
                       <h4 style={styles.cartItemName}>
-                        {item.name}
+                        {item.Name}
                       </h4>
 
                       <p style={styles.cartItemPrice}>
@@ -436,6 +660,92 @@ function Dashboard() {
 
 const styles = {
 
+  ordersSection: {
+    marginTop: "40px",
+    backgroundColor: "#ffffff",
+    padding: "25px",
+    borderRadius: "16px",
+    border: "1px solid #eeeeee",
+  },
+  ordersTitle: {
+    margin: "0 0 20px",
+    fontSize: "22px",
+  },
+  noOrders: {
+    color: "#888888",
+    fontSize: "14px",
+  },
+  customerOrderCard: {
+    border: "1px solid #eeeeee",
+    borderRadius: "12px",
+    padding: "20px",
+    marginBottom: "15px",
+  },
+  customerOrderHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "15px",
+  },
+  customerOrderTitle: {
+    margin: 0,
+    fontSize: "16px",
+  },
+  customerOrderTotal: {
+    margin: "5px 0 0",
+    color: "#777777",
+    fontSize: "13px",
+  },
+  statusBadge: {
+    backgroundColor: "#fff7ed",
+    color: "#c2410c",
+    padding: "7px 12px",
+    borderRadius: "20px",
+    fontSize: "12px",
+    fontWeight: "600",
+  },
+  customerOrderItems: {
+    borderTop: "1px solid #eeeeee",
+    paddingTop: "10px",
+  },
+  customerOrderItem: {
+    display: "flex",
+    justifyContent: "space-between",
+    padding: "7px 0",
+    fontSize: "14px",
+  },
+  orderProgress: {
+    display: "flex",
+    alignItems: "center",
+    marginTop: "25px",
+  },
+  progressStep: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "11px",
+    color: "#666666",
+    minWidth: "65px",
+  },
+  progressCircle: {
+    width: "28px",
+    height: "28px",
+    borderRadius: "50%",
+    color: "#ffffff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "12px",
+    fontWeight: "bold",
+  },
+  progressLine: {
+    height: "2px",
+    backgroundColor: "#dddddd",
+    flex: 1,
+    marginBottom: "20px",
+  },
+
   page: {
     minHeight: "100vh",
     backgroundColor: "#f7f7f5",
@@ -470,6 +780,25 @@ const styles = {
     margin: "4px 0 0",
     color: "#888888",
     fontSize: "13px",
+  },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: "20px",
+  },
+
+  menuButton: {
+    width: "40px",
+    height: "40px",
+    border: "1px solid #dddddd",
+    backgroundColor: "#ffffff",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontSize: "24px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#333333",
   },
 
 
