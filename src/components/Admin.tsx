@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import {
   addDoc,
   collection,
   deleteDoc,
   doc,
-  getDocs,
+  onSnapshot,
   updateDoc,
 } from "firebase/firestore";
 import { db } from "../firebase/firebase";
+import { t, globalCss, inr, emojiFor, FOOD_CATEGORIES } from "../theme";
 
 /* =========================================================
    TYPES
@@ -37,321 +39,213 @@ type Order = {
   items: OrderItem[];
   total: number;
   status: string;
-  createdAt?: {
-    seconds: number;
-    nanoseconds: number;
-  };
+  createdAt?: { seconds: number; nanoseconds: number };
 };
 
-type OrderStatus =
-  | "Pending"
-  | "Preparing"
-  | "Ready"
-  | "Delivered";
+type OrderStatus = "Pending" | "Preparing" | "Ready" | "Delivered";
+
+type Toast = { message: string; tone: "success" | "error" };
+
+type Tab = "menu" | "orders";
+
+const ORDER_STATUSES: OrderStatus[] = [
+  "Pending",
+  "Preparing",
+  "Ready",
+  "Delivered",
+];
 
 /* =========================================================
-   ADMIN COMPONENT
+   ADMIN
 ========================================================= */
 
 function Admin() {
-  /* =======================================================
-     FORM STATE
-  ======================================================= */
+  const navigate = useNavigate();
 
-  const [name, setName] = useState<string>("");
-  const [description, setDescription] =
-    useState<string>("");
-  const [price, setPrice] = useState<string>("");
-  const [category, setCategory] = useState<string>("");
-  const [available, setAvailable] =
-    useState<boolean>(true);
+  /* ---- form ---- */
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState("");
+  const [category, setCategory] = useState("");
+  const [available, setAvailable] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [savingFood, setSavingFood] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
 
-  /* =======================================================
-     DATA STATE
-  ======================================================= */
-
+  /* ---- data ---- */
   const [foods, setFoods] = useState<Food[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [loadingFoods, setLoadingFoods] = useState(true);
+  const [loadingOrders, setLoadingOrders] = useState(true);
 
-  /* =======================================================
-     UI STATE
-  ======================================================= */
+  /* ---- ui ---- */
+  const [tab, setTab] = useState<Tab>("menu");
+  const [search, setSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
+  const [orderFilter, setOrderFilter] = useState<"Active" | "All" | OrderStatus>(
+    "Active",
+  );
+  const [updatingOrder, setUpdatingOrder] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Food | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
 
-  const [editingId, setEditingId] = useState<string | null>(
-    null
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const formRef = useRef<HTMLDivElement | null>(null);
+
+  const showToast = useCallback(
+    (message: string, tone: Toast["tone"] = "success") => {
+      setToast({ message, tone });
+      clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(null), 2800);
+    },
+    [],
   );
 
-  const [loadingFoods, setLoadingFoods] =
-    useState<boolean>(true);
-
-  const [loadingOrders, setLoadingOrders] =
-    useState<boolean>(true);
-
-  const [savingFood, setSavingFood] =
-    useState<boolean>(false);
-
-  const [search, setSearch] = useState<string>("");
-
-  const [selectedCategory, setSelectedCategory] =
-    useState<string>("All");
-
-  const [updatingOrder, setUpdatingOrder] =
-    useState<string | null>(null);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   /* =======================================================
-     FETCH FOODS
+     LIVE DATA — replaces the one-shot getDocs, so two staff
+     members on two devices see the same board.
   ======================================================= */
 
-  const fetchFoods = async (): Promise<void> => {
-    try {
-      setLoadingFoods(true);
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "foods"),
+      (snapshot) => {
+        setFoods(
+          snapshot.docs.map((d) => {
+            const data = d.data();
 
-      const querySnapshot = await getDocs(
-        collection(db, "foods")
-      );
+            return {
+              id: d.id,
+              Name: String(data.Name || ""),
+              description: String(data.description || ""),
+              price: Number(data.price || 0),
+              category: String(data.category || ""),
+              available: Boolean(data.available),
+              emoji: data.emoji ? String(data.emoji) : undefined,
+            };
+          }),
+        );
+        setLoadingFoods(false);
+      },
+      (error) => {
+        console.error("Error loading foods:", error);
+        setLoadingFoods(false);
+        showToast("Couldn't load the menu.", "error");
+      },
+    );
 
-      const foodsData: Food[] = querySnapshot.docs.map(
-        (foodDoc) => {
-          const data = foodDoc.data();
+    return () => unsubscribe();
+  }, [showToast]);
 
-          return {
-            id: foodDoc.id,
-            Name: String(data.Name || ""),
-            description: String(data.description || ""),
-            price: Number(data.price || 0),
-            category: String(data.category || ""),
-            available: Boolean(data.available),
-            emoji: data.emoji
-              ? String(data.emoji)
-              : undefined,
-          };
-        }
-      );
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "orders"),
+      (snapshot) => {
+        const data: Order[] = snapshot.docs.map((d) => {
+          const raw = d.data();
 
-      setFoods(foodsData);
-    } catch (error) {
-      console.error("Error fetching foods:", error);
-    } finally {
-      setLoadingFoods(false);
-    }
-  };
-
-  /* =======================================================
-     FETCH ORDERS
-  ======================================================= */
-
-  const fetchOrders = async (): Promise<void> => {
-    try {
-      setLoadingOrders(true);
-
-      const querySnapshot = await getDocs(
-        collection(db, "orders")
-      );
-
-      const ordersData: Order[] = querySnapshot.docs.map(
-        (orderDoc) => {
-          const data = orderDoc.data();
-
-          const items: OrderItem[] = Array.isArray(data.items)
-            ? data.items.map((item: unknown) => {
-                const orderItem = item as Record<
-                  string,
-                  unknown
-                >;
+          const items: OrderItem[] = Array.isArray(raw.items)
+            ? raw.items.map((entry: unknown) => {
+                const item = entry as Record<string, unknown>;
 
                 return {
-                  foodId: String(
-                    orderItem.foodId || ""
-                  ),
-                  name: String(orderItem.name || ""),
-                  price: Number(orderItem.price || 0),
-                  quantity: Number(
-                    orderItem.quantity || 0
-                  ),
+                  foodId: String(item.foodId || ""),
+                  name: String(item.name || ""),
+                  price: Number(item.price || 0),
+                  quantity: Number(item.quantity || 0),
                 };
               })
             : [];
 
           return {
-            id: orderDoc.id,
-            userId: data.userId
-              ? String(data.userId)
-              : undefined,
-            userName: data.userName
-              ? String(data.userName)
-              : undefined,
+            id: d.id,
+            userId: raw.userId ? String(raw.userId) : undefined,
+            userName: raw.userName ? String(raw.userName) : undefined,
             items,
-            total: Number(data.total || 0),
-            status: String(data.status || "Pending"),
-            createdAt: data.createdAt
+            total: Number(raw.total || 0),
+            status: String(raw.status || "Pending"),
+            createdAt: raw.createdAt
               ? {
-                  seconds: Number(
-                    data.createdAt.seconds || 0
-                  ),
-                  nanoseconds: Number(
-                    data.createdAt.nanoseconds || 0
-                  ),
+                  seconds: Number(raw.createdAt.seconds || 0),
+                  nanoseconds: Number(raw.createdAt.nanoseconds || 0),
                 }
               : undefined,
           };
-        }
-      );
+        });
 
-      ordersData.sort((a, b) => {
-        const dateA = a.createdAt?.seconds || 0;
-        const dateB = b.createdAt?.seconds || 0;
+        data.sort(
+          (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0),
+        );
 
-        return dateB - dateA;
-      });
+        setOrders(data);
+        setLoadingOrders(false);
+      },
+      (error) => {
+        console.error("Error loading orders:", error);
+        setLoadingOrders(false);
+      },
+    );
 
-      setOrders(ordersData);
-    } catch (error) {
-      console.error("Error fetching orders:", error);
-    } finally {
-      setLoadingOrders(false);
-    }
-  };
-
-  /* =======================================================
-     INITIAL LOAD
-  ======================================================= */
-
-  useEffect(() => {
-    void fetchFoods();
-    void fetchOrders();
+    return () => unsubscribe();
   }, []);
 
   /* =======================================================
-     CATEGORIES
+     DERIVED
   ======================================================= */
 
   const categories = useMemo(() => {
-    const uniqueCategories = Array.from(
-      new Set(
-        foods
-          .map((food) => food.category)
-          .filter((item) => item.trim() !== "")
-      )
-    );
+    const unique = [
+      ...new Set(foods.map((f) => f.category).filter((c) => c.trim() !== "")),
+    ].sort();
 
-    return ["All", ...uniqueCategories];
+    return ["All", ...unique];
   }, [foods]);
 
-  /* =======================================================
-     FILTER FOODS
-  ======================================================= */
-
   const filteredFoods = useMemo(() => {
-    return foods.filter((food) => {
-      const matchesSearch =
-        food.Name.toLowerCase().includes(
-          search.toLowerCase()
-        ) ||
-        food.category
-          .toLowerCase()
-          .includes(search.toLowerCase());
+    const term = search.trim().toLowerCase();
 
-      const matchesCategory =
-        selectedCategory === "All" ||
-        food.category === selectedCategory;
-
-      return matchesSearch && matchesCategory;
-    });
+    return foods
+      .filter((f) =>
+        selectedCategory === "All" ? true : f.category === selectedCategory,
+      )
+      .filter((f) =>
+        !term
+          ? true
+          : f.Name.toLowerCase().includes(term) ||
+            f.category.toLowerCase().includes(term),
+      );
   }, [foods, search, selectedCategory]);
 
-  /* =======================================================
-     STATISTICS
-  ======================================================= */
+  const filteredOrders = useMemo(() => {
+    if (orderFilter === "All") return orders;
 
-  const availableFoods = foods.filter(
-    (food) => food.available
-  ).length;
+    if (orderFilter === "Active") {
+      return orders.filter((o) => o.status !== "Delivered");
+    }
 
-  const unavailableFoods = foods.length - availableFoods;
+    return orders.filter((o) => o.status === orderFilter);
+  }, [orders, orderFilter]);
 
-  const pendingOrders = orders.filter(
-    (order) =>
-      order.status === "Pending" ||
-      order.status === "Preparing"
-  ).length;
+  const availableCount = foods.filter((f) => f.available).length;
 
-  const deliveredOrders = orders.filter(
-    (order) => order.status === "Delivered"
-  ).length;
+  const activeOrders = orders.filter((o) => o.status !== "Delivered").length;
 
-  const totalRevenue = orders.reduce(
-    (total, order) => total + Number(order.total || 0),
-    0
-  );
+  const deliveredOrders = orders.filter((o) => o.status === "Delivered").length;
+
+  /* Revenue counts delivered orders only — billing for food that
+     never left the kitchen inflates the number. */
+  const revenue = orders
+    .filter((o) => o.status === "Delivered")
+    .reduce((sum, o) => sum + Number(o.total || 0), 0);
 
   /* =======================================================
-     FORM SUBMIT
+     FORM
   ======================================================= */
 
-  const handleSubmit = async (
-    event: React.FormEvent<HTMLFormElement>
-  ): Promise<void> => {
-    event.preventDefault();
-
-    if (!name.trim()) {
-      alert("Please enter food name.");
-      return;
-    }
-
-    if (!price || Number(price) <= 0) {
-      alert("Please enter a valid price.");
-      return;
-    }
-
-    if (!category.trim()) {
-      alert("Please select a category.");
-      return;
-    }
-
-    try {
-      setSavingFood(true);
-
-      const foodData = {
-        Name: name.trim(),
-        description: description.trim(),
-        price: Number(price),
-        category: category.trim(),
-        available,
-      };
-
-      if (editingId) {
-        await updateDoc(
-          doc(db, "foods", editingId),
-          foodData
-        );
-
-        alert("Food updated successfully!");
-      } else {
-        await addDoc(
-          collection(db, "foods"),
-          foodData
-        );
-
-        alert("Food added successfully!");
-      }
-
-      resetForm();
-
-      await fetchFoods();
-    } catch (error) {
-      console.error("Error saving food:", error);
-
-      alert("Failed to save food. Please try again.");
-    } finally {
-      setSavingFood(false);
-    }
-  };
-
-  /* =======================================================
-     RESET FORM
-  ======================================================= */
-
-  const resetForm = (): void => {
+  const resetForm = () => {
     setName("");
     setDescription("");
     setPrice("");
@@ -360,112 +254,139 @@ function Admin() {
     setEditingId(null);
   };
 
-  /* =======================================================
-     EDIT FOOD
-  ======================================================= */
+  const openNewForm = () => {
+    resetForm();
+    setFormOpen(true);
+    setTab("menu");
 
-  const handleEdit = (food: Food): void => {
+    requestAnimationFrame(() =>
+      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  };
+
+  const handleEdit = (food: Food) => {
     setEditingId(food.id);
-
     setName(food.Name);
     setDescription(food.description);
     setPrice(String(food.price));
     setCategory(food.category);
     setAvailable(food.available);
+    setFormOpen(true);
 
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
+    requestAnimationFrame(() =>
+      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   };
 
-  /* =======================================================
-     DELETE FOOD
-  ======================================================= */
-
-  const handleDelete = async (
-    id: string
+  const handleSubmit = async (
+    event: React.FormEvent<HTMLFormElement>,
   ): Promise<void> => {
-    const confirmDelete = window.confirm(
-      "Are you sure you want to delete this food item?"
-    );
+    event.preventDefault();
 
-    if (!confirmDelete) {
+    if (!name.trim()) {
+      showToast("Give the dish a name.", "error");
       return;
     }
 
+    if (!price || Number(price) <= 0) {
+      showToast("Enter a price above zero.", "error");
+      return;
+    }
+
+    if (!category.trim()) {
+      showToast("Pick a category.", "error");
+      return;
+    }
+
+    setSavingFood(true);
+
     try {
-      await deleteDoc(doc(db, "foods", id));
+      const payload = {
+        Name: name.trim(),
+        description: description.trim(),
+        price: Number(price),
+        category: category.trim(),
+        available,
+      };
 
-      alert("Food deleted successfully!");
+      if (editingId) {
+        await updateDoc(doc(db, "foods", editingId), payload);
+        showToast(`${payload.Name} updated.`);
+      } else {
+        await addDoc(collection(db, "foods"), payload);
+        showToast(`${payload.Name} added to the menu.`);
+      }
 
-      await fetchFoods();
+      resetForm();
+      setFormOpen(false);
     } catch (error) {
-      console.error("Error deleting food:", error);
-
-      alert("Failed to delete food.");
+      console.error("Error saving food:", error);
+      showToast("Couldn't save the dish. Try again.", "error");
+    } finally {
+      setSavingFood(false);
     }
   };
 
   /* =======================================================
-     UPDATE ORDER STATUS
+     DELETE
+  ======================================================= */
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+
+    setDeleting(true);
+
+    try {
+      await deleteDoc(doc(db, "foods", pendingDelete.id));
+      showToast(`${pendingDelete.Name} removed.`);
+      setPendingDelete(null);
+    } catch (error) {
+      console.error("Error deleting food:", error);
+      showToast("Couldn't remove the dish.", "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /* =======================================================
+     ORDER STATUS
   ======================================================= */
 
   const updateOrderStatus = async (
     orderId: string,
-    newStatus: OrderStatus
+    status: OrderStatus,
   ): Promise<void> => {
+    setUpdatingOrder(orderId);
+
     try {
-      setUpdatingOrder(orderId);
-
-      await updateDoc(doc(db, "orders", orderId), {
-        status: newStatus,
-      });
-
-      setOrders((currentOrders) =>
-        currentOrders.map((order) =>
-          order.id === orderId
-            ? {
-                ...order,
-                status: newStatus,
-              }
-            : order
-        )
-      );
+      await updateDoc(doc(db, "orders", orderId), { status });
+      showToast(`Order #${orderId.slice(-6).toUpperCase()} → ${status}`);
     } catch (error) {
-      console.error(
-        "Error updating order status:",
-        error
-      );
-
-      alert("Failed to update order status.");
+      console.error("Error updating order status:", error);
+      showToast("Couldn't update the order.", "error");
     } finally {
       setUpdatingOrder(null);
     }
   };
 
-  /* =======================================================
-     FORMAT DATE
-  ======================================================= */
+  /* ---- quick availability toggle straight from the list ---- */
+  const toggleAvailability = async (food: Food) => {
+    try {
+      await updateDoc(doc(db, "foods", food.id), { available: !food.available });
+    } catch (error) {
+      console.error("Error toggling availability:", error);
+      showToast("Couldn't change availability.", "error");
+    }
+  };
 
   const formatDate = (
-    timestamp:
-      | {
-          seconds: number;
-          nanoseconds: number;
-        }
-      | undefined
+    timestamp: { seconds: number; nanoseconds: number } | undefined,
   ): string => {
-    if (!timestamp?.seconds) {
-      return "Just now";
-    }
+    if (!timestamp?.seconds) return "Just now";
 
-    const date = new Date(timestamp.seconds * 1000);
-
-    return date.toLocaleString("en-IN", {
+    return new Date(timestamp.seconds * 1000).toLocaleString("en-IN", {
       day: "numeric",
       month: "short",
-      year: "numeric",
       hour: "numeric",
       minute: "2-digit",
     });
@@ -476,777 +397,705 @@ function Admin() {
   ======================================================= */
 
   return (
-    <div style={styles.page}>
-      {/* ===================================================
-          HEADER
-      =================================================== */}
+    <div style={s.page}>
+      <style>{globalCss}</style>
 
-      <header style={styles.header}>
-        <div style={styles.headerInner}>
-          <div style={styles.brand}>
-            <div style={styles.logoIcon}>H</div>
+      {/* ================= HEADER ================= */}
+
+      <header style={s.header}>
+        <div className="pad" style={s.headerInner}>
+          <div style={s.brand}>
+            <div style={s.mark}>RP</div>
 
             <div>
-              <h1 style={styles.logo}>
-                Hotel
-                <span style={styles.logoOrange}>
-                  Kitchen
-                </span>
-              </h1>
-
-              <p style={styles.headerSubtitle}>
-                Administration Dashboard
-              </p>
+              <h1 style={s.wordmark}>hotel rao place</h1>
+              <p style={s.wordmarkSub}>In-room dining</p>
             </div>
           </div>
 
-          <div style={styles.adminBadge}>
-            <div style={styles.adminBadgeIcon}>
-              ⚙
-            </div>
+          <div style={s.headerRight}>
+            <span style={s.liveChip}>
+              <span style={s.livePulse} />
+              Live
+            </span>
 
-            <div>
-              <span style={styles.adminLabel}>
-                PANEL
-              </span>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={s.ghostButton}
+              onClick={() => navigate("/dashboard")}
+            >
+              Guest view
+            </button>
 
-              <strong>Administrator</strong>
-            </div>
+            <button
+              type="button"
+              className="btn btn-brass"
+              style={s.addButton}
+              onClick={openNewForm}
+            >
+              + New dish
+            </button>
           </div>
         </div>
       </header>
 
-      {/* ===================================================
-          MAIN
-      =================================================== */}
+      <main className="pad" style={s.main}>
+        {/* ================= TITLE ================= */}
 
-      <main style={styles.container}>
-        {/* PAGE TITLE */}
-
-        <section style={styles.pageHeading}>
+        <div style={s.pageHead}>
           <div>
-            <span style={styles.eyebrow}>
-              HOTEL MANAGEMENT
-            </span>
-
-            <h2 style={styles.pageTitle}>
-              Dashboard Overview
-            </h2>
-
-            <p style={styles.pageDescription}>
-              Manage your menu and monitor guest orders
-              from one place.
+            <span style={s.eyebrow}>OPERATIONS</span>
+            <h2 style={s.pageTitle}>Service Board</h2>
+            <p style={s.pageSub}>
+              The menu guests see and the orders coming out of it.
             </p>
           </div>
-        </section>
+        </div>
 
-        {/* =================================================
-            STAT CARDS
-        ================================================= */}
+        {/* ================= STATS ================= */}
 
-        <section style={styles.statsGrid}>
-          <StatCard
-            icon="🍽️"
-            label="Total Foods"
-            value={foods.length}
-            subtext={`${availableFoods} currently available`}
+        <section className="stats-grid" style={s.stats}>
+          <Stat
+            label="On the menu"
+            value={String(foods.length)}
+            note={`${availableCount} available · ${foods.length - availableCount} hidden`}
           />
-
-          <StatCard
-            icon="🛎️"
-            label="Active Orders"
-            value={pendingOrders}
-            subtext={`${orders.length} total orders`}
+          <Stat
+            label="Active orders"
+            value={String(activeOrders)}
+            note={activeOrders > 0 ? "Needs attention" : "All clear"}
+            accent={activeOrders > 0}
           />
-
-          <StatCard
-            icon="✓"
+          <Stat
             label="Delivered"
-            value={deliveredOrders}
-            subtext="Successfully completed"
+            value={String(deliveredOrders)}
+            note={`${orders.length} orders all time`}
           />
-
-          <StatCard
-            icon="₹"
+          <Stat
             label="Revenue"
-            value={`₹${totalRevenue.toLocaleString(
-              "en-IN"
-            )}`}
-            subtext="From all orders"
+            value={inr(revenue)}
+            note="From delivered orders"
           />
         </section>
 
-        {/* =================================================
-            ADD / EDIT FOOD
-        ================================================= */}
+        {/* ================= TABS ================= */}
 
-        <section style={styles.formSection}>
-          <div style={styles.formHeader}>
-            <div style={styles.formHeaderIcon}>
-              {editingId ? "✎" : "+"}
-            </div>
+        <div style={s.tabs}>
+          <TabButton
+            active={tab === "menu"}
+            onClick={() => setTab("menu")}
+            label="Menu"
+            count={foods.length}
+          />
+          <TabButton
+            active={tab === "orders"}
+            onClick={() => setTab("orders")}
+            label="Orders"
+            count={activeOrders}
+            urgent={activeOrders > 0}
+          />
+        </div>
 
-            <div>
-              <h2 style={styles.sectionTitle}>
-                {editingId
-                  ? "Edit Food Item"
-                  : "Add New Food"}
-              </h2>
+        {/* ================= MENU TAB ================= */}
 
-              <p style={styles.sectionDescription}>
-                {editingId
-                  ? "Update the selected menu item."
-                  : "Add a delicious item to your hotel menu."}
-              </p>
-            </div>
-          </div>
+        {tab === "menu" && (
+          <>
+            <div ref={formRef}>
+              {formOpen ? (
+                <section className="fade-up" style={s.panel}>
+                  <div style={s.panelHead}>
+                    <div>
+                      <h3 style={s.panelTitle}>
+                        {editingId ? "Edit dish" : "Add a dish"}
+                      </h3>
+                      <p style={s.panelSub}>
+                        {editingId
+                          ? "Changes appear on the guest menu immediately."
+                          : "It goes live as soon as you save it as available."}
+                      </p>
+                    </div>
 
-          <form onSubmit={handleSubmit}>
-            <div style={styles.formGrid}>
-              {/* NAME */}
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        resetForm();
+                        setFormOpen(false);
+                      }}
+                      style={s.closeButton}
+                      aria-label="Close form"
+                    >
+                      ✕
+                    </button>
+                  </div>
 
-              <div style={styles.field}>
-                <label style={styles.label}>
-                  Food Name
-                </label>
+                  <form onSubmit={handleSubmit}>
+                    <div className="form-grid" style={s.formGrid}>
+                      <Field label="Dish name">
+                        <input
+                          className="inp"
+                          type="text"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Butter Naan"
+                          style={s.input}
+                        />
+                      </Field>
 
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(event) =>
-                    setName(event.target.value)
-                  }
-                  placeholder="e.g. Butter Naan"
-                  style={styles.input}
-                />
-              </div>
+                      <Field label="Price">
+                        <div style={s.priceWrap}>
+                          <span style={s.priceSymbol}>₹</span>
+                          <input
+                            className="inp"
+                            type="number"
+                            min="0"
+                            value={price}
+                            onChange={(e) => setPrice(e.target.value)}
+                            placeholder="60"
+                            style={s.priceInput}
+                          />
+                        </div>
+                      </Field>
 
-              {/* PRICE */}
+                      <Field label="Category">
+                        <select
+                          className="inp"
+                          value={category}
+                          onChange={(e) => setCategory(e.target.value)}
+                          style={s.input}
+                        >
+                          <option value="">Select a category</option>
+                          {FOOD_CATEGORIES.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
 
-              <div style={styles.field}>
-                <label style={styles.label}>
-                  Price
-                </label>
+                      <Field label="Availability">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setAvailable((v) => !v)}
+                          style={{
+                            ...s.toggle,
+                            ...(available ? s.toggleOn : s.toggleOff),
+                          }}
+                        >
+                          <span
+                            style={{
+                              ...s.toggleKnob,
+                              transform: available
+                                ? "translateX(0)"
+                                : "translateX(0)",
+                              background: available ? t.green : t.faint,
+                            }}
+                          />
+                          {available
+                            ? "Guests can order this"
+                            : "Hidden from guests"}
+                        </button>
+                      </Field>
+                    </div>
 
-                <div style={styles.inputWithIcon}>
-                  <span style={styles.inputIcon}>₹</span>
+                    <Field label="Description">
+                      <textarea
+                        className="inp"
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        placeholder="Slow-leavened flatbread, brushed with clarified butter."
+                        rows={3}
+                        style={s.textarea}
+                      />
+                    </Field>
 
-                  <input
-                    type="number"
-                    min="0"
-                    value={price}
-                    onChange={(event) =>
-                      setPrice(event.target.value)
-                    }
-                    placeholder="60"
-                    style={styles.priceInput}
-                  />
-                </div>
-              </div>
+                    <div style={s.formActions}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          resetForm();
+                          setFormOpen(false);
+                        }}
+                        style={s.secondaryButton}
+                      >
+                        Cancel
+                      </button>
 
-              {/* CATEGORY */}
-
-              <div style={styles.field}>
-                <label style={styles.label}>
-                  Category
-                </label>
-
-                <select
-                  value={category}
-                  onChange={(event) =>
-                    setCategory(event.target.value)
-                  }
-                  style={styles.input}
+                      <button
+                        type="submit"
+                        className="btn btn-primary"
+                        disabled={savingFood}
+                        style={s.primaryButton}
+                      >
+                        {savingFood ? (
+                          <>
+                            <span className="spin" style={s.btnSpinner} />
+                            Saving…
+                          </>
+                        ) : (
+                          <>
+                            {editingId ? "Save changes" : "Add to menu"}
+                            <span style={{ fontSize: 16 }}>→</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              ) : (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={openNewForm}
+                  style={s.addStrip}
                 >
-                  <option value="">
-                    Select category
-                  </option>
+                  <span style={s.addStripPlus}>+</span>
+                  Add a dish to the menu
+                </button>
+              )}
+            </div>
 
-                  <option value="Main Course">
-                    Main Course
-                  </option>
-
-                  <option value="Rice">Rice</option>
-
-                  <option value="Breads">
-                    Breads
-                  </option>
-
-                  <option value="Drinks">
-                    Drinks
-                  </option>
-
-                  <option value="Desserts">
-                    Desserts
-                  </option>
-
-                  <option value="Starters">
-                    Starters
-                  </option>
-
-                  <option value="Breakfast">
-                    Breakfast
-                  </option>
-
-                  <option value="Other">
-                    Other
-                  </option>
-                </select>
-              </div>
-
-              {/* AVAILABLE */}
-
-              <div style={styles.availabilityField}>
+            <section style={s.panel}>
+              <div style={s.panelHead}>
                 <div>
-                  <label style={styles.label}>
-                    Menu Availability
-                  </label>
-
-                  <p style={styles.availabilityDescription}>
-                    Allow guests to order this item.
+                  <h3 style={s.panelTitle}>Menu items</h3>
+                  <p style={s.panelSub}>
+                    {filteredFoods.length} of {foods.length} shown
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAvailable((current) => !current)
-                  }
-                  style={{
-                    ...styles.toggle,
-                    ...(available
-                      ? styles.toggleActive
-                      : styles.toggleInactive),
-                  }}
-                >
-                  <span
-                    style={{
-                      ...styles.toggleCircle,
-                      ...(available
-                        ? styles.toggleCircleActive
-                        : styles.toggleCircleInactive),
-                    }}
-                  />
+                <div style={s.filterRow}>
+                  <div style={s.searchBox}>
+                    <span style={s.searchIcon}>⌕</span>
+                    <input
+                      className="inp"
+                      type="search"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Search dishes"
+                      style={s.searchInput}
+                    />
+                  </div>
 
-                  <span style={styles.toggleText}>
-                    {available
-                      ? "Available"
-                      : "Unavailable"}
-                  </span>
-                </button>
+                  <select
+                    className="inp"
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    style={s.filterSelect}
+                  >
+                    {categories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {loadingFoods ? (
+                <SkeletonRows />
+              ) : filteredFoods.length === 0 ? (
+                <Empty
+                  icon="🍽️"
+                  title={search ? "No dish matches that" : "The menu is empty"}
+                  text={
+                    search
+                      ? "Try a different name, or clear the filters."
+                      : "Add your first dish and it will show up here."
+                  }
+                />
+              ) : (
+                <div>
+                  {filteredFoods.map((food) => (
+                    <div key={food.id} className="row-hover food-row" style={s.foodRow}>
+                      <div style={s.foodIcon}>{emojiFor(food)}</div>
+
+                      <div style={{ minWidth: 0, gridArea: "info" }}>
+                        <div style={s.foodNameRow}>
+                          <h4 style={s.foodName}>{food.Name}</h4>
+
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => toggleAvailability(food)}
+                            title="Click to toggle"
+                            style={{
+                              ...s.availPill,
+                              ...(food.available ? s.availOn : s.availOff),
+                            }}
+                          >
+                            {food.available ? "● Available" : "○ Hidden"}
+                          </button>
+                        </div>
+
+                        <p style={s.foodDesc}>
+                          {food.description || "No description added."}
+                        </p>
+
+                        <span style={s.foodCat}>
+                          {food.category || "Uncategorised"}
+                        </span>
+                      </div>
+
+                      <strong style={s.foodPrice}>{inr(food.price)}</strong>
+
+                      <div style={s.rowActions}>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => handleEdit(food)}
+                          style={s.rowBtn}
+                        >
+                          Edit
+                        </button>
+
+                        <button
+                          type="button"
+                          className="btn btn-danger"
+                          onClick={() => setPendingDelete(food)}
+                          style={{ ...s.rowBtn, color: t.red, borderColor: "#EBD3D0" }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {/* ================= ORDERS TAB ================= */}
+
+        {tab === "orders" && (
+          <section style={s.panel}>
+            <div style={s.panelHead}>
+              <div>
+                <h3 style={s.panelTitle}>Order queue</h3>
+                <p style={s.panelSub}>
+                  Newest first · updates live from the guest app
+                </p>
+              </div>
+
+              <div style={s.filterRow}>
+                {(["Active", ...ORDER_STATUSES, "All"] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    className="btn"
+                    onClick={() => setOrderFilter(f)}
+                    style={{
+                      ...s.chip,
+                      ...(orderFilter === f ? s.chipOn : {}),
+                    }}
+                  >
+                    {f}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* DESCRIPTION */}
-
-            <div style={styles.field}>
-              <label style={styles.label}>
-                Description
-              </label>
-
-              <textarea
-                value={description}
-                onChange={(event) =>
-                  setDescription(event.target.value)
-                }
-                placeholder="Describe the food, ingredients or serving style..."
-                style={styles.textarea}
-                rows={4}
+            {loadingOrders ? (
+              <SkeletonRows />
+            ) : filteredOrders.length === 0 ? (
+              <Empty
+                icon="🧾"
+                title="Nothing in this queue"
+                text="Orders placed by guests land here the moment they're sent."
               />
-            </div>
+            ) : (
+              <div style={s.orderList}>
+                {filteredOrders.map((order) => (
+                  <OrderRow
+                    key={order.id}
+                    order={order}
+                    updating={updatingOrder === order.id}
+                    onStatusChange={updateOrderStatus}
+                    formatDate={formatDate}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </main>
 
-            {/* BUTTONS */}
+      {/* ================= CONFIRM DELETE ================= */}
 
-            <div style={styles.formActions}>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  style={styles.cancelButton}
-                >
-                  Cancel
-                </button>
-              )}
+      {pendingDelete && (
+        <div
+          style={s.backdrop}
+          onClick={() => !deleting && setPendingDelete(null)}
+          role="presentation"
+        >
+          <div
+            className="fade-up"
+            style={s.modal}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="del-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={s.modalIcon}>⚠</div>
+
+            <h3 id="del-title" style={s.modalTitle}>
+              Remove {pendingDelete.Name}?
+            </h3>
+
+            <p style={s.modalText}>
+              This deletes the dish permanently. Guests with it already in their
+              tray will still be able to order it until they refresh. To take it
+              off the menu without deleting, mark it hidden instead.
+            </p>
+
+            <div style={s.modalActions}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setPendingDelete(null)}
+                disabled={deleting}
+                style={s.secondaryButton}
+              >
+                Keep it
+              </button>
 
               <button
-                type="submit"
-                disabled={savingFood}
-                style={{
-                  ...styles.primaryButton,
-                  ...(savingFood
-                    ? styles.disabledButton
-                    : {}),
-                }}
+                type="button"
+                className="btn"
+                onClick={confirmDelete}
+                disabled={deleting}
+                style={s.dangerButton}
               >
-                {savingFood
-                  ? "Saving..."
-                  : editingId
-                  ? "Update Food"
-                  : "Add Food"}
-
-                {!savingFood && (
-                  <span>→</span>
-                )}
+                {deleting ? "Removing…" : "Remove dish"}
               </button>
             </div>
-          </form>
-        </section>
-
-        {/* =================================================
-            FOOD MANAGEMENT
-        ================================================= */}
-
-        <section style={styles.managementSection}>
-          <div style={styles.managementHeader}>
-            <div>
-              <h2 style={styles.sectionTitle}>
-                Food Management
-              </h2>
-
-              <p style={styles.sectionDescription}>
-                Manage all items available on your menu.
-              </p>
-            </div>
-
-            <span style={styles.itemBadge}>
-              {foods.length} items
-            </span>
           </div>
+        </div>
+      )}
 
-          {/* SEARCH */}
+      {/* ================= TOAST ================= */}
 
-          <div style={styles.filterBar}>
-            <div style={styles.searchBox}>
-              <span style={styles.searchIcon}>⌕</span>
-
-              <input
-                type="text"
-                placeholder="Search food..."
-                value={search}
-                onChange={(event) =>
-                  setSearch(event.target.value)
-                }
-                style={styles.searchInput}
-              />
-            </div>
-
-            <select
-              value={selectedCategory}
-              onChange={(event) =>
-                setSelectedCategory(event.target.value)
-              }
-              style={styles.filterSelect}
-            >
-              {categories.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* FOOD LIST */}
-
-          {loadingFoods ? (
-            <LoadingState text="Loading menu..." />
-          ) : filteredFoods.length === 0 ? (
-            <EmptyState
-              icon="🍽️"
-              title="No food items found"
-              text="Try changing your search or add a new food item."
-            />
-          ) : (
-            <div style={styles.foodList}>
-              {filteredFoods.map((food) => (
-                <FoodManagementCard
-                  key={food.id}
-                  food={food}
-                  onEdit={handleEdit}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* =================================================
-            ORDERS
-        ================================================= */}
-
-        <section style={styles.managementSection}>
-          <div style={styles.managementHeader}>
-            <div>
-              <h2 style={styles.sectionTitle}>
-                Order Management
-              </h2>
-
-              <p style={styles.sectionDescription}>
-                View incoming orders and update their
-                status.
-              </p>
-            </div>
-
-            <span style={styles.itemBadge}>
-              {orders.length} orders
-            </span>
-          </div>
-
-          {loadingOrders ? (
-            <LoadingState text="Loading orders..." />
-          ) : orders.length === 0 ? (
-            <EmptyState
-              icon="🧾"
-              title="No orders yet"
-              text="Customer orders will appear here."
-            />
-          ) : (
-            <div style={styles.ordersList}>
-              {orders.map((order) => (
-                <OrderManagementCard
-                  key={order.id}
-                  order={order}
-                  updating={updatingOrder === order.id}
-                  onStatusChange={updateOrderStatus}
-                  formatDate={formatDate}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
+      {toast && (
+        <div
+          className="toast"
+          role="status"
+          style={{
+            ...s.toast,
+            background: toast.tone === "error" ? t.red : t.ink,
+          }}
+        >
+          <span style={s.toastMark}>{toast.tone === "error" ? "!" : "✓"}</span>
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 }
 
 /* =========================================================
-   STAT CARD
+   SUB-COMPONENTS
 ========================================================= */
 
-type StatCardProps = {
-  icon: string;
-  label: string;
-  value: string | number;
-  subtext: string;
-};
-
-function StatCard({
-  icon,
+function Stat({
   label,
   value,
-  subtext,
-}: StatCardProps) {
+  note,
+  accent,
+}: {
+  label: string;
+  value: string;
+  note: string;
+  accent?: boolean;
+}) {
   return (
-    <div style={styles.statCard}>
-      <div style={styles.statTop}>
-        <div style={styles.statIcon}>{icon}</div>
+    <div style={s.statCard}>
+      <span style={s.statLabel}>{label}</span>
 
-        <span style={styles.statLabel}>{label}</span>
-      </div>
+      <strong style={{ ...s.statValue, color: accent ? t.brass : t.ink }}>
+        {value}
+      </strong>
 
-      <strong style={styles.statValue}>{value}</strong>
+      <span style={s.statNote}>{note}</span>
+    </div>
+  );
+}
 
-      <span style={styles.statSubtext}>
-        {subtext}
+function TabButton({
+  active,
+  onClick,
+  label,
+  count,
+  urgent,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  count: number;
+  urgent?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className="btn"
+      onClick={onClick}
+      style={{ ...s.tab, ...(active ? s.tabOn : {}) }}
+    >
+      {label}
+      <span
+        style={{
+          ...s.tabCount,
+          background: urgent && !active ? t.brass : active ? t.brass : t.lineSoft,
+          color: urgent || active ? "#fff" : t.muted,
+        }}
+      >
+        {count}
       </span>
-    </div>
+    </button>
   );
 }
 
-/* =========================================================
-   FOOD MANAGEMENT CARD
-========================================================= */
-
-type FoodManagementCardProps = {
-  food: Food;
-  onEdit: (food: Food) => void;
-  onDelete: (id: string) => Promise<void>;
-};
-
-function FoodManagementCard({
-  food,
-  onEdit,
-  onDelete,
-}: FoodManagementCardProps) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div style={styles.foodManagementCard}>
-      <div style={styles.foodManagementIcon}>
-        {food.emoji || "🍽️"}
-      </div>
-
-      <div style={styles.foodManagementInfo}>
-        <div style={styles.foodNameRow}>
-          <h3 style={styles.foodName}>
-            {food.Name}
-          </h3>
-
-          <span
-            style={{
-              ...styles.availabilityBadge,
-              ...(food.available
-                ? styles.availableBadge
-                : styles.unavailableBadge),
-            }}
-          >
-            {food.available
-              ? "● Available"
-              : "● Unavailable"}
-          </span>
-        </div>
-
-        <p style={styles.foodDescription}>
-          {food.description ||
-            "No description added."}
-        </p>
-
-        <span style={styles.foodCategory}>
-          {food.category || "Uncategorized"}
-        </span>
-      </div>
-
-      <div style={styles.foodPrice}>
-        ₹{food.price.toLocaleString("en-IN")}
-      </div>
-
-      <div style={styles.actions}>
-        <button
-          type="button"
-          onClick={() => onEdit(food)}
-          style={styles.editButton}
-        >
-          ✎ Edit
-        </button>
-
-        <button
-          type="button"
-          onClick={() => void onDelete(food.id)}
-          style={styles.deleteButton}
-        >
-          Delete
-        </button>
-      </div>
-    </div>
+    <label style={s.field}>
+      <span style={s.label}>{label}</span>
+      {children}
+    </label>
   );
 }
 
-/* =========================================================
-   ORDER CARD
-========================================================= */
-
-type OrderManagementCardProps = {
-  order: Order;
-  updating: boolean;
-  onStatusChange: (
-    orderId: string,
-    status: OrderStatus
-  ) => Promise<void>;
-  formatDate: (
-    timestamp:
-      | {
-          seconds: number;
-          nanoseconds: number;
-        }
-      | undefined
-  ) => string;
-};
-
-function OrderManagementCard({
+function OrderRow({
   order,
   updating,
   onStatusChange,
   formatDate,
-}: OrderManagementCardProps) {
+}: {
+  order: Order;
+  updating: boolean;
+  onStatusChange: (id: string, status: OrderStatus) => Promise<void>;
+  formatDate: (ts: Order["createdAt"]) => string;
+}) {
   const status = order.status as OrderStatus;
+  const index = ORDER_STATUSES.indexOf(status);
+  const next = index >= 0 && index < ORDER_STATUSES.length - 1
+    ? ORDER_STATUSES[index + 1]
+    : null;
 
   return (
-    <div style={styles.orderCard}>
-      {/* HEADER */}
-
-      <div style={styles.orderHeader}>
-        <div>
-          <div style={styles.orderNumberRow}>
-            <span style={styles.orderNumber}>
-              ORDER #
-              {order.id.slice(-6).toUpperCase()}
-            </span>
-
-            <span style={styles.orderDate}>
-              {formatDate(order.createdAt)}
-            </span>
+    <article style={s.orderCard}>
+      <div style={s.orderTop}>
+        <div style={{ minWidth: 0 }}>
+          <div style={s.orderMeta}>
+            <span style={s.orderNo}>#{order.id.slice(-6).toUpperCase()}</span>
+            <span style={s.orderDate}>{formatDate(order.createdAt)}</span>
           </div>
 
-          <h3 style={styles.orderCustomer}>
-            {order.userName || "Hotel Guest"}
-          </h3>
-
-          <span style={styles.orderRoom}>
-            Room service order
-          </span>
+          <h4 style={s.orderGuest}>{order.userName || "Hotel guest"}</h4>
+          <span style={s.orderRoom}>Room service · Room 204</span>
         </div>
 
-        <div style={styles.orderRight}>
-          <strong style={styles.orderAmount}>
-            ₹{order.total.toLocaleString("en-IN")}
-          </strong>
+        <div style={s.orderRight}>
+          <strong style={s.orderAmount}>{inr(order.total)}</strong>
 
-          <select
-            value={status}
-            disabled={updating}
-            onChange={(event) =>
-              void onStatusChange(
-                order.id,
-                event.target.value as OrderStatus
-              )
-            }
-            style={{
-              ...styles.statusSelect,
-              ...getStatusStyle(status),
-            }}
-          >
-            <option value="Pending">
-              Pending
-            </option>
+          <div style={s.orderControls}>
+            {next && (
+              <button
+                type="button"
+                className="btn btn-brass"
+                disabled={updating}
+                onClick={() => onStatusChange(order.id, next)}
+                style={s.advanceButton}
+              >
+                {updating ? "…" : `Mark ${next}`}
+              </button>
+            )}
 
-            <option value="Preparing">
-              Preparing
-            </option>
-
-            <option value="Ready">
-              Ready
-            </option>
-
-            <option value="Delivered">
-              Delivered
-            </option>
-          </select>
+            <select
+              className="inp"
+              value={status}
+              disabled={updating}
+              onChange={(e) =>
+                void onStatusChange(order.id, e.target.value as OrderStatus)
+              }
+              style={{ ...s.statusSelect, ...statusTone(status) }}
+            >
+              {ORDER_STATUSES.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
-      {/* ITEMS */}
-
-      <div style={styles.orderItems}>
-        {order.items.map((item, index) => (
-          <div
-            key={`${item.foodId}-${index}`}
-            style={styles.orderItem}
-          >
-            <div style={styles.orderItemLeft}>
-              <span style={styles.quantityBadge}>
-                {item.quantity}×
-              </span>
-
-              <span>{item.name}</span>
-            </div>
-
-            <strong>
-              ₹
-              {(
-                item.price * item.quantity
-              ).toLocaleString("en-IN")}
-            </strong>
+      <div style={s.orderItems}>
+        {order.items.map((item, i) => (
+          <div key={`${item.foodId}-${i}`} style={s.orderItem}>
+            <span style={s.orderQty}>{item.quantity}×</span>
+            <span style={{ flex: 1 }}>{item.name}</span>
+            <strong>{inr(item.price * item.quantity)}</strong>
           </div>
         ))}
       </div>
-
-      {/* FOOTER */}
-
-      <div style={styles.orderFooter}>
-        <span>
-          {order.items.length}{" "}
-          {order.items.length === 1
-            ? "item"
-            : "items"}
-        </span>
-
-        <span style={styles.orderTotalLabel}>
-          Total: ₹
-          {order.total.toLocaleString("en-IN")}
-        </span>
-      </div>
-    </div>
+    </article>
   );
 }
 
-/* =========================================================
-   LOADING STATE
-========================================================= */
-
-type LoadingStateProps = {
-  text: string;
-};
-
-function LoadingState({
-  text,
-}: LoadingStateProps) {
+function SkeletonRows() {
   return (
-    <div style={styles.emptyState}>
-      <div style={styles.spinner}></div>
-
-      <p style={styles.emptyTitle}>{text}</p>
+    <div>
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={s.skelRow}>
+          <div className="skel" style={{ width: 48, height: 48, borderRadius: 12 }} />
+          <div style={{ flex: 1 }}>
+            <div className="skel" style={{ height: 12, width: "30%" }} />
+            <div className="skel" style={{ height: 10, width: "55%", marginTop: 9 }} />
+          </div>
+          <div className="skel" style={{ width: 70, height: 16 }} />
+        </div>
+      ))}
     </div>
   );
 }
 
-/* =========================================================
-   EMPTY STATE
-========================================================= */
-
-type EmptyStateProps = {
-  icon: string;
-  title: string;
-  text: string;
-};
-
-function EmptyState({
+function Empty({
   icon,
   title,
   text,
-}: EmptyStateProps) {
+}: {
+  icon: string;
+  title: string;
+  text: string;
+}) {
   return (
-    <div style={styles.emptyState}>
-      <div style={styles.emptyIcon}>{icon}</div>
-
-      <h3 style={styles.emptyTitle}>{title}</h3>
-
-      <p style={styles.emptyText}>{text}</p>
+    <div style={s.empty}>
+      <div style={{ fontSize: 32, marginBottom: 12 }}>{icon}</div>
+      <h4 style={s.emptyTitle}>{title}</h4>
+      <p style={s.emptyText}>{text}</p>
     </div>
   );
 }
 
-/* =========================================================
-   STATUS STYLE
-========================================================= */
-
-function getStatusStyle(
-  status: OrderStatus
-): React.CSSProperties {
+function statusTone(status: OrderStatus): React.CSSProperties {
   switch (status) {
     case "Preparing":
-      return {
-        backgroundColor: "#eff6ff",
-        color: "#2563eb",
-        borderColor: "#bfdbfe",
-      };
-
+      return { background: t.blueSoft, color: t.blue, borderColor: "#CFE0EE" };
     case "Ready":
-      return {
-        backgroundColor: "#ecfdf5",
-        color: "#059669",
-        borderColor: "#a7f3d0",
-      };
-
+      return { background: t.greenSoft, color: t.green, borderColor: "#CDE3D7" };
     case "Delivered":
-      return {
-        backgroundColor: "#f0fdf4",
-        color: "#15803d",
-        borderColor: "#bbf7d0",
-      };
-
+      return { background: "#EDEFEC", color: t.muted, borderColor: t.line };
     default:
-      return {
-        backgroundColor: "#fff7ed",
-        color: "#d97706",
-        borderColor: "#fed7aa",
-      };
+      return { background: t.amberSoft, color: t.amber, borderColor: "#EEDCB8" };
   }
 }
 
@@ -1254,720 +1103,739 @@ function getStatusStyle(
    STYLES
 ========================================================= */
 
-const styles: Record<string, React.CSSProperties> = {
-  /* ================= PAGE ================= */
-
+const s: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
-    backgroundColor: "#f6f7f5",
-    color: "#1f2937",
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif',
+    background: t.cream,
+    color: t.text,
+    fontFamily: t.body,
   },
 
-  /* ================= HEADER ================= */
-
   header: {
-    backgroundColor: "#ffffff",
-    borderBottom: "1px solid #e5e7eb",
     position: "sticky",
     top: 0,
-    zIndex: 100,
+    zIndex: 40,
+    background: "rgba(247,244,237,.9)",
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+    borderBottom: `1px solid ${t.line}`,
   },
 
   headerInner: {
-    maxWidth: "1500px",
-    minHeight: "76px",
+    maxWidth: 1400,
     margin: "0 auto",
-    padding: "0 35px",
+    minHeight: 72,
+    padding: "0 34px",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 16,
   },
 
-  brand: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
+  brand: { display: "flex", alignItems: "center", gap: 12 },
+
+  mark: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    background: t.ink,
+    color: t.brass,
+    display: "grid",
+    placeItems: "center",
+    fontFamily: t.display,
+    fontSize: 15,
+    letterSpacing: "0.05em",
   },
 
-  logoIcon: {
-    width: "42px",
-    height: "42px",
-    borderRadius: "12px",
-    backgroundColor: "#1f2937",
-    color: "#ffffff",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "20px",
-    fontWeight: "800",
-  },
-
-  logo: {
+  wordmark: {
     margin: 0,
-    fontSize: "21px",
-    fontWeight: "800",
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 19,
+    color: t.ink,
   },
 
-  logoOrange: {
-    color: "#d97706",
-    marginLeft: "4px",
+  wordmarkSub: {
+    margin: "1px 0 0",
+    fontSize: 10,
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+    color: t.faint,
   },
 
-  headerSubtitle: {
-    margin: "3px 0 0",
-    color: "#9ca3af",
-    fontSize: "11px",
-  },
+  headerRight: { display: "flex", alignItems: "center", gap: 10 },
 
-  adminBadge: {
+  liveChip: {
     display: "flex",
     alignItems: "center",
-    gap: "10px",
-    padding: "8px 12px",
-    borderRadius: "10px",
-    backgroundColor: "#f9fafb",
-    border: "1px solid #e5e7eb",
+    gap: 7,
+    padding: "6px 12px",
+    borderRadius: 20,
+    background: t.greenSoft,
+    color: t.green,
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
   },
 
-  adminBadgeIcon: {
-    width: "30px",
-    height: "30px",
-    borderRadius: "8px",
-    backgroundColor: "#fff7ed",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+  livePulse: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: t.green,
   },
 
-  adminLabel: {
-    display: "block",
-    fontSize: "8px",
-    color: "#9ca3af",
-    letterSpacing: "1px",
+  ghostButton: {
+    height: 38,
+    padding: "0 15px",
+    borderRadius: 10,
+    background: t.surface,
+    border: `1px solid ${t.line}`,
+    color: t.muted,
+    fontSize: 12.5,
   },
 
-  /* ================= CONTAINER ================= */
-
-  container: {
-    maxWidth: "1400px",
-    margin: "0 auto",
-    padding: "35px",
+  addButton: {
+    height: 38,
+    padding: "0 17px",
+    borderRadius: 10,
+    background: t.brass,
+    color: "#fff",
+    fontSize: 12.5,
   },
 
-  pageHeading: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "25px",
-  },
+  main: { maxWidth: 1400, margin: "0 auto", padding: "30px 34px 70px" },
+
+  pageHead: { marginBottom: 24 },
 
   eyebrow: {
-    color: "#d97706",
-    fontSize: "10px",
-    fontWeight: "800",
-    letterSpacing: "1.5px",
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.24em",
+    color: t.brass,
   },
 
   pageTitle: {
-    margin: "7px 0 5px",
-    fontSize: "29px",
-    letterSpacing: "-0.7px",
+    margin: "10px 0 6px",
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 32,
+    letterSpacing: "-0.02em",
+    color: t.ink,
   },
 
-  pageDescription: {
-    margin: 0,
-    color: "#9ca3af",
-    fontSize: "13px",
-  },
+  pageSub: { margin: 0, fontSize: 13, color: t.faint },
 
-  /* ================= STATISTICS ================= */
+  /* ---------- Stats ---------- */
 
-  statsGrid: {
+  stats: {
     display: "grid",
-    gridTemplateColumns:
-      "repeat(4, minmax(0, 1fr))",
-    gap: "16px",
-    marginBottom: "28px",
+    gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+    gap: 14,
+    marginBottom: 28,
   },
 
   statCard: {
-    backgroundColor: "#ffffff",
-    border: "1px solid #e7e7e5",
-    borderRadius: "15px",
-    padding: "19px",
-  },
-
-  statTop: {
+    background: t.surface,
+    border: `1px solid ${t.lineSoft}`,
+    borderRadius: t.r,
+    padding: "18px 20px",
     display: "flex",
-    alignItems: "center",
-    gap: "9px",
-    marginBottom: "15px",
-  },
-
-  statIcon: {
-    width: "34px",
-    height: "34px",
-    borderRadius: "9px",
-    backgroundColor: "#fff7ed",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "15px",
+    flexDirection: "column",
+    gap: 6,
   },
 
   statLabel: {
-    color: "#6b7280",
-    fontSize: "12px",
-    fontWeight: "600",
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: t.faint,
   },
 
   statValue: {
-    display: "block",
-    fontSize: "25px",
-    marginBottom: "5px",
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 30,
+    lineHeight: 1,
+    letterSpacing: "-0.02em",
   },
 
-  statSubtext: {
-    color: "#9ca3af",
-    fontSize: "10px",
+  statNote: { fontSize: 11, color: t.faint },
+
+  /* ---------- Tabs ---------- */
+
+  tabs: {
+    display: "flex",
+    gap: 8,
+    marginBottom: 18,
+    borderBottom: `1px solid ${t.line}`,
   },
 
-  /* ================= SECTIONS ================= */
-
-  formSection: {
-    backgroundColor: "#ffffff",
-    border: "1px solid #e7e7e5",
-    borderRadius: "17px",
-    padding: "25px",
-    marginBottom: "25px",
-  },
-
-  formHeader: {
+  tab: {
     display: "flex",
     alignItems: "center",
-    gap: "12px",
-    marginBottom: "25px",
+    gap: 8,
+    padding: "11px 4px",
+    marginBottom: -1,
+    background: "none",
+    border: "none",
+    borderBottom: "2px solid transparent",
+    color: t.faint,
+    fontSize: 14,
+    marginRight: 18,
   },
 
-  formHeaderIcon: {
-    width: "40px",
-    height: "40px",
-    borderRadius: "10px",
-    backgroundColor: "#fff7ed",
-    color: "#d97706",
+  tabOn: { color: t.ink, borderBottomColor: t.brass },
+
+  tabCount: {
+    minWidth: 20,
+    padding: "2px 7px",
+    borderRadius: 20,
+    fontSize: 10,
+    fontWeight: 800,
+  },
+
+  /* ---------- Panels ---------- */
+
+  panel: {
+    background: t.surface,
+    border: `1px solid ${t.lineSoft}`,
+    borderRadius: t.rLg,
+    padding: 24,
+    marginBottom: 20,
+  },
+
+  panelHead: {
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 16,
+    flexWrap: "wrap",
+    marginBottom: 18,
+  },
+
+  panelTitle: {
+    margin: 0,
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 21,
+    color: t.ink,
+  },
+
+  panelSub: { margin: "4px 0 0", fontSize: 12, color: t.faint },
+
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    background: t.surfaceAlt,
+    border: `1px solid ${t.line}`,
+    color: t.muted,
+    fontSize: 13,
+  },
+
+  addStrip: {
+    width: "100%",
+    padding: "18px",
+    marginBottom: 20,
+    borderRadius: t.rLg,
+    background: t.surface,
+    border: `1px dashed ${t.line}`,
+    color: t.muted,
+    fontSize: 13.5,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontSize: "20px",
-    fontWeight: "700",
+    gap: 10,
   },
 
-  sectionTitle: {
-    margin: 0,
-    fontSize: "19px",
-    fontWeight: "750",
+  addStripPlus: {
+    width: 24,
+    height: 24,
+    borderRadius: "50%",
+    background: t.brassSoft,
+    color: t.brass,
+    display: "grid",
+    placeItems: "center",
+    fontSize: 15,
+    fontWeight: 700,
   },
 
-  sectionDescription: {
-    margin: "4px 0 0",
-    color: "#9ca3af",
-    fontSize: "11px",
-  },
-
-  /* ================= FORM ================= */
+  /* ---------- Form ---------- */
 
   formGrid: {
     display: "grid",
-    gridTemplateColumns:
-      "repeat(2, minmax(0, 1fr))",
-    gap: "18px",
+    gridTemplateColumns: "repeat(2, minmax(0,1fr))",
+    gap: 16,
   },
 
-  field: {
-    marginBottom: "18px",
-  },
+  field: { display: "block", marginBottom: 16 },
 
   label: {
     display: "block",
-    fontSize: "12px",
-    fontWeight: "700",
-    color: "#374151",
-    marginBottom: "7px",
+    marginBottom: 7,
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    color: t.muted,
   },
 
   input: {
     width: "100%",
-    boxSizing: "border-box",
-    padding: "11px 12px",
-    border: "1px solid #dfe3e8",
-    borderRadius: "9px",
-    backgroundColor: "#ffffff",
-    fontSize: "13px",
-    outline: "none",
+    padding: "11px 13px",
+    borderRadius: 10,
+    border: `1px solid ${t.line}`,
+    background: t.surface,
+    fontSize: 13.5,
+    color: t.text,
   },
 
-  inputWithIcon: {
+  priceWrap: {
     display: "flex",
     alignItems: "center",
-    border: "1px solid #dfe3e8",
-    borderRadius: "9px",
+    borderRadius: 10,
+    border: `1px solid ${t.line}`,
+    background: t.surface,
     overflow: "hidden",
   },
 
-  inputIcon: {
-    paddingLeft: "12px",
-    color: "#9ca3af",
-    fontSize: "13px",
+  priceSymbol: {
+    paddingLeft: 13,
+    color: t.faint,
+    fontSize: 13.5,
   },
 
   priceInput: {
     width: "100%",
     border: "none",
-    outline: "none",
-    padding: "11px 8px",
-    fontSize: "13px",
+    background: "none",
+    padding: "11px 10px",
+    fontSize: 13.5,
+    color: t.text,
   },
 
   textarea: {
     width: "100%",
-    boxSizing: "border-box",
-    border: "1px solid #dfe3e8",
-    borderRadius: "9px",
-    padding: "11px 12px",
-    fontSize: "13px",
-    resize: "vertical",
-    outline: "none",
-    fontFamily: "inherit",
-  },
-
-  availabilityField: {
-    marginBottom: "18px",
     padding: "11px 13px",
-    borderRadius: "10px",
-    backgroundColor: "#f9fafb",
-    border: "1px solid #eef0f2",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-
-  availabilityDescription: {
-    margin: "-3px 0 0",
-    color: "#9ca3af",
-    fontSize: "10px",
+    borderRadius: 10,
+    border: `1px solid ${t.line}`,
+    background: t.surface,
+    fontSize: 13.5,
+    lineHeight: 1.6,
+    resize: "vertical",
+    color: t.text,
   },
 
   toggle: {
-    minWidth: "115px",
-    height: "38px",
-    borderRadius: "20px",
-    border: "none",
-    cursor: "pointer",
+    width: "100%",
+    height: 44,
+    padding: "0 14px",
+    borderRadius: 10,
+    border: `1px solid ${t.line}`,
     display: "flex",
     alignItems: "center",
-    padding: "4px",
-    gap: "7px",
-    transition: "all 0.2s ease",
+    gap: 10,
+    fontSize: 12.5,
   },
 
-  toggleActive: {
-    backgroundColor: "#ecfdf5",
-    color: "#059669",
-  },
+  toggleOn: { background: t.greenSoft, borderColor: "#CDE3D7", color: t.green },
 
-  toggleInactive: {
-    backgroundColor: "#f3f4f6",
-    color: "#6b7280",
-  },
+  toggleOff: { background: t.surfaceAlt, color: t.muted },
 
-  toggleCircle: {
-    width: "30px",
-    height: "30px",
+  toggleKnob: {
+    width: 8,
+    height: 8,
     borderRadius: "50%",
-    backgroundColor: "#ffffff",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  toggleCircleActive: {
-    boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
-  },
-
-  toggleCircleInactive: {
-    boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-  },
-
-  toggleText: {
-    fontSize: "10px",
-    fontWeight: "700",
+    flexShrink: 0,
   },
 
   formActions: {
     display: "flex",
     justifyContent: "flex-end",
-    gap: "10px",
-    marginTop: "5px",
+    gap: 10,
+    marginTop: 6,
   },
 
-  cancelButton: {
-    border: "1px solid #d1d5db",
-    backgroundColor: "#ffffff",
-    color: "#6b7280",
-    padding: "11px 18px",
-    borderRadius: "9px",
-    cursor: "pointer",
-    fontWeight: "700",
-    fontSize: "12px",
+  secondaryButton: {
+    padding: "12px 20px",
+    borderRadius: 10,
+    background: t.surface,
+    border: `1px solid ${t.line}`,
+    color: t.muted,
+    fontSize: 13,
   },
 
   primaryButton: {
-    minWidth: "145px",
-    border: "none",
-    backgroundColor: "#1f2937",
-    color: "#ffffff",
-    padding: "11px 18px",
-    borderRadius: "9px",
-    cursor: "pointer",
-    fontWeight: "700",
-    fontSize: "12px",
+    padding: "12px 22px",
+    borderRadius: 10,
+    background: t.ink,
+    color: "#fff",
+    fontSize: 13,
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: "15px",
+    gap: 10,
   },
 
-  disabledButton: {
-    opacity: 0.6,
-    cursor: "not-allowed",
+  dangerButton: {
+    padding: "12px 20px",
+    borderRadius: 10,
+    background: t.red,
+    color: "#fff",
+    fontSize: 13,
   },
 
-  /* ================= MANAGEMENT ================= */
-
-  managementSection: {
-    backgroundColor: "#ffffff",
-    border: "1px solid #e7e7e5",
-    borderRadius: "17px",
-    padding: "25px",
-    marginBottom: "25px",
+  btnSpinner: {
+    width: 13,
+    height: 13,
+    borderRadius: "50%",
+    border: "2px solid rgba(255,255,255,.3)",
+    borderTopColor: "#fff",
   },
 
-  managementHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: "20px",
-  },
+  /* ---------- Filters ---------- */
 
-  itemBadge: {
-    backgroundColor: "#f3f4f6",
-    color: "#6b7280",
-    padding: "7px 11px",
-    borderRadius: "8px",
-    fontSize: "10px",
-    fontWeight: "700",
-  },
-
-  /* ================= FILTER ================= */
-
-  filterBar: {
-    display: "flex",
-    gap: "10px",
-    marginBottom: "18px",
-  },
+  filterRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
 
   searchBox: {
-    flex: 1,
     display: "flex",
     alignItems: "center",
-    border: "1px solid #e5e7eb",
-    borderRadius: "9px",
-    padding: "0 11px",
+    gap: 6,
+    background: t.surface,
+    border: `1px solid ${t.line}`,
+    borderRadius: 10,
+    padding: "0 12px",
+    width: 200,
   },
 
-  searchIcon: {
-    color: "#9ca3af",
-    fontSize: "18px",
-  },
+  searchIcon: { color: t.faint, fontSize: 16 },
 
   searchInput: {
-    width: "100%",
+    flex: 1,
+    minWidth: 0,
     border: "none",
-    outline: "none",
-    padding: "10px",
-    fontSize: "12px",
+    background: "none",
+    padding: "9px 0",
+    fontSize: 13,
+    color: t.text,
   },
 
   filterSelect: {
-    border: "1px solid #e5e7eb",
-    borderRadius: "9px",
-    padding: "0 12px",
-    backgroundColor: "#ffffff",
-    color: "#374151",
-    fontSize: "12px",
-    minWidth: "150px",
+    padding: "9px 12px",
+    borderRadius: 10,
+    border: `1px solid ${t.line}`,
+    background: t.surface,
+    fontSize: 13,
+    color: t.text,
+    minWidth: 140,
   },
 
-  /* ================= FOOD LIST ================= */
-
-  foodList: {
-    display: "flex",
-    flexDirection: "column",
+  chip: {
+    padding: "7px 13px",
+    borderRadius: 8,
+    background: t.surface,
+    border: `1px solid ${t.line}`,
+    color: t.muted,
+    fontSize: 12,
   },
 
-  foodManagementCard: {
+  chipOn: { background: t.ink, borderColor: t.ink, color: "#fff" },
+
+  /* ---------- Food rows ---------- */
+
+  foodRow: {
     display: "grid",
-    gridTemplateColumns:
-      "55px minmax(0, 1fr) 100px auto",
-    gap: "15px",
+    gridTemplateColumns: "56px minmax(0,1fr) 110px auto",
+    gridTemplateAreas: '"icon info price act"',
     alignItems: "center",
-    padding: "15px 0",
-    borderBottom: "1px solid #f0f0ee",
+    gap: 16,
+    padding: "14px 12px",
+    margin: "0 -12px",
+    borderRadius: 12,
+    borderBottom: `1px solid ${t.lineSoft}`,
   },
 
-  foodManagementIcon: {
-    width: "50px",
-    height: "50px",
-    borderRadius: "11px",
-    backgroundColor: "#f8f2e9",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "25px",
-  },
-
-  foodManagementInfo: {
-    minWidth: 0,
+  foodIcon: {
+    gridArea: "icon",
+    width: 50,
+    height: 50,
+    borderRadius: 13,
+    background: t.brassSoft,
+    display: "grid",
+    placeItems: "center",
+    fontSize: 24,
   },
 
   foodNameRow: {
     display: "flex",
     alignItems: "center",
-    gap: "8px",
+    gap: 9,
     flexWrap: "wrap",
   },
 
   foodName: {
     margin: 0,
-    fontSize: "14px",
-    fontWeight: "700",
+    fontSize: 14.5,
+    fontWeight: 700,
+    color: t.ink,
   },
 
-  availabilityBadge: {
-    padding: "4px 7px",
-    borderRadius: "6px",
-    fontSize: "8px",
-    fontWeight: "800",
+  availPill: {
+    padding: "3px 8px",
+    borderRadius: 6,
+    fontSize: 9,
+    fontWeight: 800,
+    letterSpacing: "0.05em",
+    border: "1px solid transparent",
   },
 
-  availableBadge: {
-    color: "#059669",
-    backgroundColor: "#ecfdf5",
-  },
+  availOn: { background: t.greenSoft, color: t.green },
 
-  unavailableBadge: {
-    color: "#dc2626",
-    backgroundColor: "#fef2f2",
-  },
+  availOff: { background: t.surfaceAlt, color: t.faint },
 
-  foodDescription: {
+  foodDesc: {
     margin: "5px 0",
-    color: "#9ca3af",
-    fontSize: "10px",
+    fontSize: 11.5,
+    color: t.faint,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
 
-  foodCategory: {
-    color: "#d97706",
-    fontSize: "9px",
-    fontWeight: "700",
+  foodCat: {
+    fontSize: 9.5,
+    fontWeight: 800,
+    letterSpacing: "0.1em",
     textTransform: "uppercase",
+    color: t.brass,
   },
 
   foodPrice: {
-    fontWeight: "800",
-    fontSize: "14px",
+    gridArea: "price",
+    fontFamily: t.display,
+    fontSize: 18,
     textAlign: "right",
+    color: t.ink,
   },
 
-  actions: {
+  rowActions: { gridArea: "act", display: "flex", gap: 7 },
+
+  rowBtn: {
+    padding: "8px 13px",
+    borderRadius: 9,
+    background: t.surface,
+    border: `1px solid ${t.line}`,
+    color: t.muted,
+    fontSize: 11.5,
+  },
+
+  skelRow: {
     display: "flex",
-    gap: "7px",
+    alignItems: "center",
+    gap: 16,
+    padding: "16px 0",
+    borderBottom: `1px solid ${t.lineSoft}`,
   },
 
-  editButton: {
-    border: "1px solid #fed7aa",
-    backgroundColor: "#fff7ed",
-    color: "#d97706",
-    padding: "8px 11px",
-    borderRadius: "7px",
-    cursor: "pointer",
-    fontWeight: "700",
-    fontSize: "10px",
-  },
+  /* ---------- Orders ---------- */
 
-  deleteButton: {
-    border: "1px solid #fecaca",
-    backgroundColor: "#fef2f2",
-    color: "#dc2626",
-    padding: "8px 11px",
-    borderRadius: "7px",
-    cursor: "pointer",
-    fontWeight: "700",
-    fontSize: "10px",
-  },
-
-  /* ================= ORDERS ================= */
-
-  ordersList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "13px",
-  },
+  orderList: { display: "flex", flexDirection: "column", gap: 13 },
 
   orderCard: {
-    border: "1px solid #e7e7e5",
-    borderRadius: "14px",
-    padding: "18px",
-    backgroundColor: "#ffffff",
+    border: `1px solid ${t.lineSoft}`,
+    borderRadius: t.r,
+    padding: 18,
+    background: t.surface,
   },
 
-  orderHeader: {
+  orderTop: {
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: "20px",
+    gap: 18,
+    flexWrap: "wrap",
   },
 
-  orderNumberRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
+  orderMeta: { display: "flex", alignItems: "center", gap: 9 },
+
+  orderNo: {
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    color: t.muted,
   },
 
-  orderNumber: {
-    fontSize: "10px",
-    fontWeight: "800",
-    color: "#374151",
+  orderDate: { fontSize: 10.5, color: t.faint },
+
+  orderGuest: {
+    margin: "7px 0 3px",
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 17,
+    color: t.ink,
   },
 
-  orderDate: {
-    color: "#9ca3af",
-    fontSize: "9px",
-  },
-
-  orderCustomer: {
-    margin: "6px 0 2px",
-    fontSize: "15px",
-  },
-
-  orderRoom: {
-    color: "#9ca3af",
-    fontSize: "10px",
-  },
+  orderRoom: { fontSize: 10.5, color: t.faint },
 
   orderRight: {
     display: "flex",
-    alignItems: "flex-end",
     flexDirection: "column",
-    gap: "8px",
+    alignItems: "flex-end",
+    gap: 9,
   },
 
-  orderAmount: {
-    fontSize: "18px",
+  orderAmount: { fontFamily: t.display, fontSize: 21, color: t.ink },
+
+  orderControls: { display: "flex", alignItems: "center", gap: 8 },
+
+  advanceButton: {
+    padding: "8px 13px",
+    borderRadius: 9,
+    background: t.brass,
+    color: "#fff",
+    fontSize: 11.5,
   },
 
   statusSelect: {
+    padding: "8px 10px",
+    borderRadius: 9,
     border: "1px solid",
-    borderRadius: "8px",
-    padding: "7px 9px",
-    fontSize: "10px",
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: 800,
     cursor: "pointer",
-    outline: "none",
   },
 
   orderItems: {
-    borderTop: "1px solid #f0f0ee",
-    marginTop: "15px",
-    paddingTop: "10px",
+    marginTop: 15,
+    paddingTop: 12,
+    borderTop: `1px solid ${t.lineSoft}`,
   },
 
   orderItem: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    padding: "7px 0",
-    fontSize: "12px",
+    gap: 10,
+    padding: "5px 0",
+    fontSize: 12.5,
   },
 
-  orderItemLeft: {
-    display: "flex",
-    alignItems: "center",
-    gap: "9px",
+  orderQty: {
+    padding: "3px 7px",
+    borderRadius: 5,
+    background: t.surfaceAlt,
+    border: `1px solid ${t.lineSoft}`,
+    fontSize: 10,
+    fontWeight: 800,
+    color: t.muted,
   },
 
-  quantityBadge: {
-    backgroundColor: "#f3f4f6",
-    color: "#4b5563",
-    padding: "4px 7px",
-    borderRadius: "5px",
-    fontSize: "9px",
-    fontWeight: "800",
-  },
+  /* ---------- Empty ---------- */
 
-  orderFooter: {
-    borderTop: "1px solid #f0f0ee",
-    marginTop: "8px",
-    paddingTop: "12px",
-    display: "flex",
-    justifyContent: "space-between",
-    color: "#9ca3af",
-    fontSize: "10px",
-  },
-
-  orderTotalLabel: {
-    color: "#374151",
-    fontWeight: "700",
-  },
-
-  /* ================= EMPTY ================= */
-
-  emptyState: {
-    padding: "50px 20px",
+  empty: {
+    padding: "48px 20px",
     textAlign: "center",
-    border: "1px dashed #d1d5db",
-    borderRadius: "12px",
-  },
-
-  spinner: {
-    width: "28px",
-    height: "28px",
-    borderRadius: "50%",
-    border: "3px solid #e5e7eb",
-    borderTopColor: "#d97706",
-    margin: "0 auto 12px",
-  },
-
-  emptyIcon: {
-    fontSize: "40px",
-    marginBottom: "8px",
+    border: `1px dashed ${t.line}`,
+    borderRadius: t.r,
   },
 
   emptyTitle: {
-    margin: "0 0 5px",
-    fontSize: "14px",
-    fontWeight: "700",
+    margin: "0 0 7px",
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 17,
+    color: t.ink,
   },
 
   emptyText: {
-    margin: 0,
-    color: "#9ca3af",
-    fontSize: "11px",
+    margin: "0 auto",
+    maxWidth: 320,
+    fontSize: 12.5,
+    lineHeight: 1.6,
+    color: t.faint,
+  },
+
+  /* ---------- Modal ---------- */
+
+  backdrop: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 80,
+    background: "rgba(18,36,30,.42)",
+    backdropFilter: "blur(3px)",
+    display: "grid",
+    placeItems: "center",
+    padding: 20,
+  },
+
+  modal: {
+    width: "100%",
+    maxWidth: 400,
+    background: t.surface,
+    borderRadius: t.rLg,
+    padding: 26,
+    boxShadow: "0 24px 70px rgba(0,0,0,.28)",
+  },
+
+  modalIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    background: t.redSoft,
+    color: t.red,
+    display: "grid",
+    placeItems: "center",
+    fontSize: 19,
+    marginBottom: 16,
+  },
+
+  modalTitle: {
+    margin: "0 0 9px",
+    fontFamily: t.display,
+    fontWeight: 400,
+    fontSize: 21,
+    color: t.ink,
+  },
+
+  modalText: {
+    margin: "0 0 22px",
+    fontSize: 13,
+    lineHeight: 1.65,
+    color: t.muted,
+  },
+
+  modalActions: { display: "flex", justifyContent: "flex-end", gap: 10 },
+
+  /* ---------- Toast ---------- */
+
+  toast: {
+    position: "fixed",
+    left: "50%",
+    bottom: 28,
+    transform: "translateX(-50%)",
+    zIndex: 90,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "13px 20px",
+    borderRadius: 12,
+    color: "#fff",
+    fontSize: 13,
+    boxShadow: "0 14px 40px rgba(0,0,0,.24)",
+    maxWidth: "calc(100vw - 40px)",
+  },
+
+  toastMark: {
+    width: 19,
+    height: 19,
+    flexShrink: 0,
+    borderRadius: "50%",
+    background: "rgba(255,255,255,.16)",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 11,
+    fontWeight: 800,
   },
 };
 

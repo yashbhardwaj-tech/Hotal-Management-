@@ -1,18 +1,20 @@
-import LoginPage from "./components/LoginPage";
-import { Routes, Route } from "react-router";
+import { Routes, Route, Navigate } from "react-router";
 import Dashboard from "./components/Dashboard";
-import Admin from "./components/Admin";
 import ProtectedAdminRoute from "./components/ProtectedAdminRoute";
 
 function App() {
-    return (
-        <div>
-            <Routes>
-                <Route path="/" element={<LoginPage />} />
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/admin" element={<ProtectedAdminRoute />} />
-            </Routes>
-        </div>);
+  return (
+    <Routes>
+      {/* The menu is the front door — no login in the way */}
+      <Route path="/" element={<Dashboard />} />
+      <Route path="/dashboard" element={<Navigate to="/" replace />} />
+
+      {/* Sign-in happens inside this guard, only when needed */}
+      <Route path="/admin" element={<ProtectedAdminRoute />} />
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
 }
 
 export default App;
