@@ -20,6 +20,15 @@ import {
   saveDeliveryDetails,
   type DeliveryDetails,
 } from "../utils/auth";
+import {
+  getPortions,
+  hasPortions,
+  startingPrice,
+  lineId,
+  type Portion,
+} from "../utils/portions";
+import { BrandMark } from "./Brand";
+import { PortionPicker } from "./Portionpicker";
 import { t, globalCss, inr, emojiFor } from "../theme";
 
 /* =========================================================
@@ -37,15 +46,24 @@ type Food = {
   category?: string;
   available: boolean;
   emoji?: string;
+  portions?: Portion[];
 };
 
-type CartItem = Food & { quantity: number };
+/* Half and Full of the same dish are separate tray lines, so
+   the food id alone can't key the cart — lineKey does. */
+type CartItem = Food & {
+  quantity: number;
+  lineKey: string;
+  portionLabel?: string;
+  unitPrice: number;
+};
 
 type OrderItem = {
   foodId: string;
   name: string;
   price: number;
   quantity: number;
+  portion?: string;
 };
 
 type Customer = {
@@ -97,14 +115,23 @@ function Dashboard() {
 
   const [foods, setFoods] = useState<Food[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [cart, setCart] = useState<CartItem[]>([]);
-
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try {
+      const raw = localStorage.getItem("hk_cart");
+      return raw ? (JSON.parse(raw) as CartItem[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [search, setSearch] = useState("");
 
   const [loadingFoods, setLoadingFoods] = useState(true);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [placingOrder, setPlacingOrder] = useState(false);
+
+  /* Dish waiting on a size choice */
+  const [pendingFood, setPendingFood] = useState<Food | null>(null);
 
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [details, setDetails] = useState<DeliveryDetails>(emptyDetails);
@@ -149,6 +176,15 @@ function Dashboard() {
     if (saved) setDetails(saved);
   }, []);
 
+  /* Keep the tray across refreshes — a lost cart is a lost order. */
+  useEffect(() => {
+    try {
+      localStorage.setItem("hk_cart", JSON.stringify(cart));
+    } catch {
+      /* Private mode or quota — not worth failing over */
+    }
+  }, [cart]);
+
   /* =====================================================
      FOODS
   ===================================================== */
@@ -172,6 +208,9 @@ function Dashboard() {
               category: data.category ? String(data.category) : undefined,
               available: Boolean(data.available),
               emoji: data.emoji ? String(data.emoji) : undefined,
+              portions: Array.isArray(data.portions)
+                ? (data.portions as Portion[])
+                : undefined,
             };
           }),
         );
@@ -207,15 +246,16 @@ function Dashboard() {
 
           const items: OrderItem[] = Array.isArray(raw.items)
             ? raw.items.map((entry: unknown) => {
-                const item = entry as Record<string, unknown>;
+              const item = entry as Record<string, unknown>;
 
-                return {
-                  foodId: String(item.foodId || ""),
-                  name: String(item.name || ""),
-                  price: Number(item.price || 0),
-                  quantity: Number(item.quantity || 0),
-                };
-              })
+              return {
+                foodId: String(item.foodId || ""),
+                name: String(item.name || ""),
+                price: Number(item.price || 0),
+                quantity: Number(item.quantity || 0),
+                portion: item.portion ? String(item.portion) : undefined,
+              };
+            })
             : [];
 
           return {
@@ -228,9 +268,9 @@ function Dashboard() {
             status: String(raw.status || "Pending"),
             createdAt: raw.createdAt
               ? {
-                  seconds: Number(raw.createdAt.seconds || 0),
-                  nanoseconds: Number(raw.createdAt.nanoseconds || 0),
-                }
+                seconds: Number(raw.createdAt.seconds || 0),
+                nanoseconds: Number(raw.createdAt.nanoseconds || 0),
+              }
               : undefined,
           };
         });
@@ -294,7 +334,7 @@ function Dashboard() {
   );
 
   const totalPrice = cart.reduce(
-    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+    (sum, item) => sum + Number(item.unitPrice || 0) * Number(item.quantity || 0),
     0,
   );
 
@@ -307,32 +347,58 @@ function Dashboard() {
      CART
   ===================================================== */
 
-  const addToCart = (food: Food): void => {
+  const addToCart = (food: Food, portion?: Portion): void => {
+    const key = lineId(food.id, portion?.label);
+    const unitPrice = portion?.price ?? Number(food.price || 0);
+
     setCart((current) => {
-      const existing = current.find((item) => item.id === food.id);
+      const existing = current.find((item) => item.lineKey === key);
 
       if (existing) {
         return current.map((item) =>
-          item.id === food.id ? { ...item, quantity: item.quantity + 1 } : item,
+          item.lineKey === key
+            ? { ...item, quantity: item.quantity + 1 }
+            : item,
         );
       }
 
-      return [...current, { ...food, quantity: 1 }];
+      return [
+        ...current,
+        {
+          ...food,
+          quantity: 1,
+          lineKey: key,
+          portionLabel: portion?.label,
+          unitPrice,
+        },
+      ];
     });
   };
 
-  const setQuantity = (id: string, delta: number): void => {
+  /* Dishes with sizes ask first; everything else adds straight away. */
+  const requestAdd = (food: Food): void => {
+    if (hasPortions(food)) {
+      setPendingFood(food);
+      return;
+    }
+
+    addToCart(food);
+  };
+
+  const setQuantity = (key: string, delta: number): void => {
     setCart((current) =>
       current
         .map((item) =>
-          item.id === id ? { ...item, quantity: item.quantity + delta } : item,
+          item.lineKey === key
+            ? { ...item, quantity: item.quantity + delta }
+            : item,
         )
         .filter((item) => item.quantity > 0),
     );
   };
 
-  const removeItem = (id: string): void => {
-    setCart((current) => current.filter((item) => item.id !== id));
+  const removeItem = (key: string): void => {
+    setCart((current) => current.filter((item) => item.lineKey !== key));
   };
 
   /* =====================================================
@@ -404,8 +470,9 @@ function Dashboard() {
         items: cart.map((item) => ({
           foodId: item.id,
           name: item.Name || item.name || "Food Item",
-          price: Number(item.price || 0),
+          price: Number(item.unitPrice || 0),
           quantity: Number(item.quantity || 1),
+          portion: item.portionLabel ?? null,
         })),
         total: totalPrice,
         status: "Pending",
@@ -500,7 +567,7 @@ function Dashboard() {
       <header style={s.header}>
         <div className="pad" style={s.headerInner}>
           <div style={s.brand}>
-            <div style={s.mark}>RP</div>
+            <BrandMark />
 
             <div>
               <h1 style={s.wordmark}>hotel rao place</h1>
@@ -682,7 +749,7 @@ function Dashboard() {
             ) : (
               <div style={s.foodGrid}>
                 {filteredFoods.map((food) => (
-                  <FoodCard key={food.id} food={food} onAdd={addToCart} />
+                  <FoodCard key={food.id} food={food} onAdd={requestAdd} />
                 ))}
               </div>
             )}
@@ -756,7 +823,7 @@ function Dashboard() {
               <>
                 <div className="thin" style={s.trayItems}>
                   {cart.map((item) => (
-                    <div key={item.id} style={s.trayItem}>
+                    <div key={item.lineKey} style={s.trayItem}>
                       <div style={s.trayIcon}>{emojiFor(item)}</div>
 
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -765,7 +832,12 @@ function Dashboard() {
                         </h4>
 
                         <span style={s.trayItemPrice}>
-                          {inr(item.price)} each
+                          {item.portionLabel && (
+                            <span style={s.trayPortion}>
+                              {item.portionLabel} ·{" "}
+                            </span>
+                          )}
+                          {inr(item.unitPrice)} each
                         </span>
 
                         <div style={s.stepper}>
@@ -773,7 +845,7 @@ function Dashboard() {
                             type="button"
                             className="btn"
                             aria-label="Decrease quantity"
-                            onClick={() => setQuantity(item.id, -1)}
+                            onClick={() => setQuantity(item.lineKey, -1)}
                             style={s.stepBtn}
                           >
                             −
@@ -785,7 +857,7 @@ function Dashboard() {
                             type="button"
                             className="btn"
                             aria-label="Increase quantity"
-                            onClick={() => setQuantity(item.id, 1)}
+                            onClick={() => setQuantity(item.lineKey, 1)}
                             style={s.stepBtn}
                           >
                             +
@@ -794,7 +866,7 @@ function Dashboard() {
                           <button
                             type="button"
                             className="btn"
-                            onClick={() => removeItem(item.id)}
+                            onClick={() => removeItem(item.lineKey)}
                             style={s.removeBtn}
                           >
                             Remove
@@ -803,7 +875,7 @@ function Dashboard() {
                       </div>
 
                       <strong style={s.trayItemTotal}>
-                        {inr(item.price * item.quantity)}
+                        {inr(item.unitPrice * item.quantity)}
                       </strong>
                     </div>
                   ))}
@@ -850,6 +922,24 @@ function Dashboard() {
           </aside>
         </div>
       </main>
+
+      {/* ================= SIZE PICKER ================= */}
+
+      <PortionPicker
+        open={Boolean(pendingFood)}
+        dishName={pendingFood?.Name || pendingFood?.name || ""}
+        portions={getPortions(pendingFood ?? undefined)}
+        onPick={(portion) => {
+          if (pendingFood) {
+            addToCart(pendingFood, portion);
+            showToast(
+              `${pendingFood.Name || pendingFood.name} (${portion.label}) added`,
+            );
+          }
+          setPendingFood(null);
+        }}
+        onClose={() => setPendingFood(null)}
+      />
 
       {/* ================= CHECKOUT ================= */}
 
@@ -1081,12 +1171,19 @@ function FoodCard({ food, onAdd }: FoodCardProps) {
   const [added, setAdded] = useState(false);
   const timer = useRef<TimerId | undefined>(undefined);
 
+  const sizes = getPortions(food);
+  const sized = sizes.length > 0;
+
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const handleAdd = (): void => {
     onAdd(food);
-    setAdded(true);
 
+    /* Sized dishes open a picker, so the tick would be a lie —
+       the item isn't in the tray until a size is chosen. */
+    if (sized) return;
+
+    setAdded(true);
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setAdded(false), 1100);
   };
@@ -1105,8 +1202,21 @@ function FoodCard({ food, onAdd }: FoodCardProps) {
           {food.description || "Freshly prepared with quality ingredients."}
         </p>
 
+        {sized && (
+          <div style={s.sizeRow}>
+            {sizes.map((size) => (
+              <span key={size.label} style={s.sizeChip}>
+                {size.label}
+              </span>
+            ))}
+          </div>
+        )}
+
         <div style={s.foodFoot}>
-          <strong style={s.foodPrice}>{inr(food.price)}</strong>
+          <div>
+            {sized && <span style={s.fromLabel}>from</span>}
+            <strong style={s.foodPrice}>{inr(startingPrice(food))}</strong>
+          </div>
 
           <button
             type="button"
@@ -1114,7 +1224,7 @@ function FoodCard({ food, onAdd }: FoodCardProps) {
             onClick={handleAdd}
             style={{ ...s.addBtn, ...(added ? s.addBtnDone : {}) }}
           >
-            {added ? "✓ Added" : "Add"}
+            {added ? "✓ Added" : sized ? "Choose" : "Add"}
           </button>
         </div>
       </div>
@@ -1154,7 +1264,14 @@ function OrderCard({ order, currentStep, formatDate }: OrderCardProps) {
         {(order.items || []).map((item, index) => (
           <div key={`${item.foodId}-${index}`} style={s.orderItem}>
             <span style={s.orderQty}>{item.quantity}×</span>
-            <span style={{ flex: 1 }}>{item.name}</span>
+
+            <span style={{ flex: 1 }}>
+              {item.name}
+              {item.portion && (
+                <span style={s.itemPortion}> · {item.portion}</span>
+              )}
+            </span>
+
             <strong>
               {inr(Number(item.price || 0) * Number(item.quantity || 0))}
             </strong>
@@ -1284,19 +1401,6 @@ const s: Record<string, CSSProperties> = {
   },
 
   brand: { display: "flex", alignItems: "center", gap: 12 },
-
-  mark: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    background: t.ink,
-    color: t.brass,
-    display: "grid",
-    placeItems: "center",
-    fontFamily: t.display,
-    fontSize: 15,
-    letterSpacing: "0.05em",
-  },
 
   wordmark: {
     margin: 0,
@@ -1570,13 +1674,34 @@ const s: Record<string, CSSProperties> = {
     overflow: "hidden",
   },
 
+  sizeRow: { display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" },
+
+  sizeChip: {
+    padding: "3px 9px",
+    borderRadius: 20,
+    background: t.brassSoft,
+    color: t.brass,
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: "0.03em",
+  },
+
   foodFoot: {
     marginTop: "auto",
     paddingTop: 16,
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-end",
     justifyContent: "space-between",
     gap: 10,
+  },
+
+  fromLabel: {
+    display: "block",
+    fontSize: 9.5,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: t.faint,
+    marginBottom: 1,
   },
 
   foodPrice: { fontFamily: t.display, fontSize: 19, color: t.ink },
@@ -1587,6 +1712,7 @@ const s: Record<string, CSSProperties> = {
     background: t.brass,
     color: "#fff",
     fontSize: 12.5,
+    whiteSpace: "nowrap",
   },
 
   addBtnDone: { background: t.green },
@@ -1668,6 +1794,8 @@ const s: Record<string, CSSProperties> = {
     fontWeight: 800,
     color: t.muted,
   },
+
+  itemPortion: { color: t.brass, fontWeight: 600 },
 
   orderAddress: {
     margin: "0 0 16px",
@@ -1815,6 +1943,8 @@ const s: Record<string, CSSProperties> = {
     fontSize: 10.5,
     color: t.faint,
   },
+
+  trayPortion: { color: t.brass, fontWeight: 700 },
 
   stepper: { display: "flex", alignItems: "center", gap: 7, marginTop: 8 },
 

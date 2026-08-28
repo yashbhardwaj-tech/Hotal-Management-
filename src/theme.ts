@@ -5,45 +5,45 @@
 ========================================================= */
 
 export const t = {
-  /* Surfaces */
-  cream: "#F7F4ED",
-  surface: "#FFFFFF",
-  surfaceAlt: "#FBF9F4",
+    /* Surfaces */
+    cream: "#F7F4ED",
+    surface: "#FFFFFF",
+    surfaceAlt: "#FBF9F4",
 
-  /* Ink — deep forest green, the house colour */
-  ink: "#12241E",
-  inkSoft: "#1C3529",
+    /* Ink — deep forest green, the house colour */
+    ink: "#12241E",
+    inkSoft: "#1C3529",
 
-  /* Brass accent */
-  brass: "#B08D3F",
-  brassSoft: "#F3EBD8",
+    /* Brass accent */
+    brass: "#B08D3F",
+    brassSoft: "#F3EBD8",
 
-  /* Text */
-  text: "#1B1B18",
-  muted: "#7A7568",
-  faint: "#A8A296",
+    /* Text */
+    text: "#1B1B18",
+    muted: "#7A7568",
+    faint: "#A8A296",
 
-  /* Lines */
-  line: "#E4DFD3",
-  lineSoft: "#EFEBE1",
+    /* Lines */
+    line: "#E4DFD3",
+    lineSoft: "#EFEBE1",
 
-  /* Status */
-  green: "#2F6B4F",
-  greenSoft: "#E8F1EC",
-  blue: "#2B5F8A",
-  blueSoft: "#E7F0F7",
-  amber: "#A97514",
-  amberSoft: "#FBF1DC",
-  red: "#9E3B34",
-  redSoft: "#F8EAE8",
+    /* Status */
+    green: "#2F6B4F",
+    greenSoft: "#E8F1EC",
+    blue: "#2B5F8A",
+    blueSoft: "#E7F0F7",
+    amber: "#A97514",
+    amberSoft: "#FBF1DC",
+    red: "#9E3B34",
+    redSoft: "#F8EAE8",
 
-  /* Type */
-  display: 'Georgia, "Times New Roman", "Noto Serif", serif',
-  body: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
+    /* Type */
+    display: 'Georgia, "Times New Roman", "Noto Serif", serif',
+    body: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
 
-  /* Radius */
-  r: 14,
-  rLg: 20,
+    /* Radius */
+    r: 14,
+    rLg: 20,
 };
 
 /* =========================================================
@@ -178,6 +178,11 @@ export const globalCss = `
       row-gap: 10px;
     }
   }
+    @keyframes alertPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(176,141,63,.55); }
+  70%  { box-shadow: 0 0 0 18px rgba(176,141,63,0); }
+  100% { box-shadow: 0 0 0 0 rgba(176,141,63,0); }
+}
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -192,29 +197,29 @@ export const globalCss = `
 ========================================================= */
 
 export const inr = (n: number): string =>
-  `₹${Number(n || 0).toLocaleString("en-IN")}`;
+    `₹${Number(n || 0).toLocaleString("en-IN")}`;
 
 const categoryEmoji: Record<string, string> = {
-  "Main Course": "🍛",
-  Rice: "🍚",
-  Breads: "🫓",
-  Drinks: "🥤",
-  Desserts: "🍮",
-  Starters: "🥗",
-  Breakfast: "🍳",
+    "Main Course": "🍛",
+    Rice: "🍚",
+    Breads: "🫓",
+    Drinks: "🥤",
+    Desserts: "🍮",
+    Starters: "🥗",
+    Breakfast: "🍳",
 };
 
 export const emojiFor = (
-  food: { emoji?: string; category?: string } | undefined,
+    food: { emoji?: string; category?: string } | undefined,
 ): string => food?.emoji || categoryEmoji[food?.category || ""] || "🍽️";
 
 export const FOOD_CATEGORIES = [
-  "Main Course",
-  "Rice",
-  "Breads",
-  "Drinks",
-  "Desserts",
-  "Starters",
-  "Breakfast",
-  "Other",
+    "Main Course",
+    "Rice",
+    "Breads",
+    "Drinks",
+    "Desserts",
+    "Starters",
+    "Breakfast",
+    "Other",
 ];
