@@ -1,77 +1,9 @@
-// components/NewOrderAlert.tsx
+// components/Neworderalert.tsx
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { playAlertSound, unlockAudio, type SoundId } from "../utils/alertSounds";
 import { t, inr } from "../theme";
-
-/* =========================================================
-   CHIME
-   Synthesised with WebAudio rather than an mp3: no asset to
-   ship, no 404 if the file moves, and it works offline.
-
-   Browsers suspend AudioContext until the page has been
-   interacted with, so the context is created lazily and
-   resumed on the first click anywhere.
-========================================================= */
-
-const useChime = () => {
-  const contextRef = useRef<AudioContext | null>(null);
-
-  const unlock = useCallback(() => {
-    if (!contextRef.current) {
-      const Ctor =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
-
-      if (Ctor) contextRef.current = new Ctor();
-    }
-
-    void contextRef.current?.resume();
-  }, []);
-
-  useEffect(() => {
-    window.addEventListener("pointerdown", unlock, { once: true });
-    window.addEventListener("keydown", unlock, { once: true });
-
-    return () => {
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-    };
-  }, [unlock]);
-
-  const play = useCallback(() => {
-    unlock();
-
-    const context = contextRef.current;
-    if (!context || context.state !== "running") return;
-
-    /* Two rising notes, twice — reads as a doorbell, not a beep */
-    const notes = [880, 1174.66, 880, 1174.66];
-
-    notes.forEach((frequency, index) => {
-      const start = context.currentTime + index * 0.18;
-
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-
-      oscillator.type = "sine";
-      oscillator.frequency.value = frequency;
-
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
-
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-
-      oscillator.start(start);
-      oscillator.stop(start + 0.18);
-    });
-  }, [unlock]);
-
-  return play;
-};
 
 /* =========================================================
    TYPES
@@ -91,6 +23,11 @@ interface NewOrderAlertProps {
   onAccept: (orderId: string) => Promise<void> | void;
   soundEnabled: boolean;
   onToggleSound: (enabled: boolean) => void;
+  soundId: SoundId;
+  volume: number;
+  repeatSeconds: number;
+  /** Fires the first time the browser lets audio through. */
+  onAudioUnlocked?: () => void;
 }
 
 /* =========================================================
@@ -102,17 +39,42 @@ export function NewOrderAlert({
   onAccept,
   soundEnabled,
   onToggleSound,
+  soundId,
+  volume,
+  repeatSeconds,
+  onAudioUnlocked,
 }: NewOrderAlertProps) {
-  const playChime = useChime();
-
   const [accepting, setAccepting] = useState<string | null>(null);
+
   const announcedRef = useRef<Set<string>>(new Set());
   const repeatRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const current = orders[0];
   const queued = orders.length - 1;
 
-  /* Chime once per order id, then every 20s while anything is
+  const playChime = useCallback(() => {
+    playAlertSound(soundId, volume);
+  }, [soundId, volume]);
+
+  /* Browsers keep AudioContext suspended until the page has
+     been interacted with. These listeners are deliberately NOT
+     `{ once: true }` — the first click can land before the
+     context exists, and a one-shot listener would never retry. */
+  useEffect(() => {
+    const handler = () => {
+      if (unlockAudio()) onAudioUnlocked?.();
+    };
+
+    window.addEventListener("pointerdown", handler);
+    window.addEventListener("keydown", handler);
+
+    return () => {
+      window.removeEventListener("pointerdown", handler);
+      window.removeEventListener("keydown", handler);
+    };
+  }, [onAudioUnlocked]);
+
+  /* Sound once per order id, then on a repeat while anything is
      still waiting — a kitchen is noisy and one ping gets missed. */
   useEffect(() => {
     if (!soundEnabled || orders.length === 0) {
@@ -120,9 +82,7 @@ export function NewOrderAlert({
       return;
     }
 
-    const unseen = orders.filter(
-      (order) => !announcedRef.current.has(order.id),
-    );
+    const unseen = orders.filter((order) => !announcedRef.current.has(order.id));
 
     if (unseen.length > 0) {
       unseen.forEach((order) => announcedRef.current.add(order.id));
@@ -130,10 +90,10 @@ export function NewOrderAlert({
     }
 
     clearInterval(repeatRef.current);
-    repeatRef.current = setInterval(playChime, 20000);
+    repeatRef.current = setInterval(playChime, Math.max(2, repeatSeconds) * 1000);
 
     return () => clearInterval(repeatRef.current);
-  }, [orders, soundEnabled, playChime]);
+  }, [orders, soundEnabled, playChime, repeatSeconds]);
 
   useEffect(() => () => clearInterval(repeatRef.current), []);
 

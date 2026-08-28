@@ -12,7 +12,9 @@ import { db } from "../firebase/firebase";
 import { NewOrderAlert, type AlertOrder } from "./Neworderalert";
 import { BrandMark } from "./Brand";
 import { PortionEditor } from "./Portioneditor";
+import { SoundSettings } from "./SoundSettings";
 import { getPortions, type Portion } from "../utils/portions";
+import { unlockAudio, type SoundId } from "../utils/alertSounds";
 import { t, globalCss, inr, emojiFor, FOOD_CATEGORIES } from "../theme";
 
 /* =========================================================
@@ -94,7 +96,7 @@ function Admin() {
     const [loadingFoods, setLoadingFoods] = useState(true);
     const [loadingOrders, setLoadingOrders] = useState(true);
 
-    /* ---- ui ---- */
+    /* ---- tab, kept in the URL so a refresh stays put ---- */
     const [searchParams, setSearchParams] = useSearchParams();
 
     const tab: Tab = searchParams.get("tab") === "orders" ? "orders" : "menu";
@@ -106,7 +108,10 @@ function Admin() {
             setSearchParams(params, { replace: true });
         },
         [searchParams, setSearchParams],
-    ); const [search, setSearch] = useState("");
+    );
+
+    /* ---- ui ---- */
+    const [search, setSearch] = useState("");
     const [selectedCategory, setSelectedCategory] = useState("All");
     const [orderFilter, setOrderFilter] = useState<"Active" | "All" | OrderStatus>(
         "Active",
@@ -116,15 +121,27 @@ function Admin() {
     const [deleting, setDeleting] = useState(false);
     const [toast, setToast] = useState<Toast | null>(null);
 
+    /* ---- sound preferences, persisted per device ---- */
     const [soundEnabled, setSoundEnabled] = useState(
         () => localStorage.getItem("hk_alert_sound") !== "off",
     );
+    const [soundId, setSoundId] = useState<SoundId>(
+        () => (localStorage.getItem("hk_sound_id") as SoundId) || "pips",
+    );
+    const [volume, setVolume] = useState(
+        () => Number(localStorage.getItem("hk_sound_volume")) || 1.6,
+    );
+    const [repeatSeconds, setRepeatSeconds] = useState(
+        () => Number(localStorage.getItem("hk_sound_repeat")) || 8,
+    );
+
+    /* Browsers block audio until the page is interacted with.
+       Until that happens the kitchen gets a silent alert, so say
+       so rather than letting them think it is broken. */
+    const [audioReady, setAudioReady] = useState(false);
 
     const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const formRef = useRef<HTMLDivElement | null>(null);
-
-    /* Orders already on the board when this tab opened must not
-       set off the alarm — only genuinely new ones do. */
 
     const showToast = useCallback(
         (message: string, tone: Toast["tone"] = "success") => {
@@ -136,6 +153,29 @@ function Admin() {
     );
 
     useEffect(() => () => clearTimeout(toastTimer.current), []);
+
+    const handleSoundChange = useCallback(
+        (next: { soundId?: SoundId; volume?: number; repeatSeconds?: number }) => {
+            if (next.soundId) {
+                setSoundId(next.soundId);
+                localStorage.setItem("hk_sound_id", next.soundId);
+            }
+
+            if (next.volume !== undefined) {
+                setVolume(next.volume);
+                localStorage.setItem("hk_sound_volume", String(next.volume));
+            }
+
+            if (next.repeatSeconds !== undefined) {
+                setRepeatSeconds(next.repeatSeconds);
+                localStorage.setItem("hk_sound_repeat", String(next.repeatSeconds));
+            }
+
+            /* Any of these came from a click, so audio is unlocked now */
+            if (unlockAudio()) setAudioReady(true);
+        },
+        [],
+    );
 
     /* =======================================================
        LIVE DATA — replaces the one-shot getDocs, so two staff
@@ -282,7 +322,7 @@ function Admin() {
         .reduce((sum, o) => sum + Number(o.total || 0), 0);
 
     /* Every unaccepted order raises the alert, whenever it arrived.
-   Pending means nobody has acknowledged it yet. */
+       Pending means nobody has acknowledged it yet. */
     const pendingAlerts: AlertOrder[] = useMemo(
         () =>
             orders
@@ -533,6 +573,28 @@ function Admin() {
             </header>
 
             <main className="pad" style={s.main}>
+                {/* ---- Audio has to be unlocked by a real click ---- */}
+
+                {soundEnabled && !audioReady && (
+                    <div style={s.audioBanner}>
+                        <span>
+                            🔇 Your browser blocks sound until you interact with this page.
+                            Alerts will be silent until you enable it.
+                        </span>
+
+                        <button
+                            type="button"
+                            className="btn btn-brass"
+                            onClick={() => {
+                                if (unlockAudio()) setAudioReady(true);
+                            }}
+                            style={s.audioButton}
+                        >
+                            Enable order sound
+                        </button>
+                    </div>
+                )}
+
                 {/* ================= TITLE ================= */}
 
                 <div style={s.pageHead}>
@@ -901,55 +963,64 @@ function Admin() {
                 {/* ================= ORDERS TAB ================= */}
 
                 {tab === "orders" && (
-                    <section style={s.panel}>
-                        <div style={s.panelHead}>
-                            <div>
-                                <h3 style={s.panelTitle}>Order queue</h3>
-                                <p style={s.panelSub}>
-                                    Newest first · updates live from the guest app
-                                </p>
+                    <>
+                        <SoundSettings
+                            soundId={soundId}
+                            volume={volume}
+                            repeatSeconds={repeatSeconds}
+                            onChange={handleSoundChange}
+                        />
+
+                        <section style={s.panel}>
+                            <div style={s.panelHead}>
+                                <div>
+                                    <h3 style={s.panelTitle}>Order queue</h3>
+                                    <p style={s.panelSub}>
+                                        Newest first · updates live from the guest app
+                                    </p>
+                                </div>
+
+                                <div style={s.filterRow}>
+                                    {(["Active", ...ORDER_STATUSES, "All"] as const).map((f) => (
+                                        <button
+                                            key={f}
+                                            type="button"
+                                            className="btn"
+                                            onClick={() => setOrderFilter(f)}
+                                            style={{
+                                                ...s.chip,
+                                                ...(orderFilter === f ? s.chipOn : {}),
+                                            }}
+                                        >
+                                            {f}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
 
-                            <div style={s.filterRow}>
-                                {(["Active", ...ORDER_STATUSES, "All"] as const).map((f) => (
-                                    <button
-                                        key={f}
-                                        type="button"
-                                        className="btn"
-                                        onClick={() => setOrderFilter(f)}
-                                        style={{
-                                            ...s.chip,
-                                            ...(orderFilter === f ? s.chipOn : {}),
-                                        }}
-                                    >
-                                        {f}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {loadingOrders ? (
-                            <SkeletonRows />
-                        ) : filteredOrders.length === 0 ? (
-                            <Empty
-                                icon="🧾"
-                                title="Nothing in this queue"
-                                text="Orders placed by guests land here the moment they're sent."
-                            />
-                        ) : (
-                            <div style={s.orderList}>
-                                {filteredOrders.map((order) => (
-                                    <OrderRow
-                                        key={order.id}
-                                        order={order}
-                                        updating={updatingOrder === order.id}
-                                        onStatusChange={updateOrderStatus}
-                                        formatDate={formatDate}
-                                    />
-                                ))}
-                            </div>
-                        )}
-                    </section>
+                            {loadingOrders ? (
+                                <SkeletonRows />
+                            ) : filteredOrders.length === 0 ? (
+                                <Empty
+                                    icon="🧾"
+                                    title="Nothing in this queue"
+                                    text="Orders placed by guests land here the moment they're sent."
+                                />
+                            ) : (
+                                <div style={s.orderList}>
+                                    {filteredOrders.map((order) => (
+                                        <OrderRow
+                                            key={order.id}
+                                            order={order}
+                                            updating={updatingOrder === order.id}
+                                            onStatusChange={updateOrderStatus}
+                                            formatDate={formatDate}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </section>
+                    </>
                 )}
             </main>
 
@@ -1016,6 +1087,10 @@ function Admin() {
                     setSoundEnabled(next);
                     localStorage.setItem("hk_alert_sound", next ? "on" : "off");
                 }}
+                soundId={soundId}
+                volume={volume}
+                repeatSeconds={repeatSeconds}
+                onAudioUnlocked={() => setAudioReady(true)}
             />
 
             {/* ================= TOAST ================= */}
@@ -1371,6 +1446,31 @@ const s: Record<string, React.CSSProperties> = {
     },
 
     main: { maxWidth: 1400, margin: "0 auto", padding: "30px 34px 70px" },
+
+    audioBanner: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 14,
+        flexWrap: "wrap",
+        padding: "12px 16px",
+        marginBottom: 22,
+        borderRadius: 12,
+        background: t.amberSoft,
+        border: "1px solid #EEDCB8",
+        color: t.amber,
+        fontSize: 12.5,
+        lineHeight: 1.5,
+    },
+
+    audioButton: {
+        padding: "8px 15px",
+        borderRadius: 9,
+        background: t.brass,
+        color: "#fff",
+        fontSize: 12,
+        whiteSpace: "nowrap",
+    },
 
     pageHead: { marginBottom: 24 },
 
