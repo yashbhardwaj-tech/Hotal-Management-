@@ -1,8 +1,12 @@
 // components/Neworderalert.tsx
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { playAlertSound, unlockAudio, type SoundId } from "../utils/alertSounds";
+import {
+  playAlertSound,
+  unlockAudio,
+  REPEAT_SECONDS,
+} from "../utils/alertSounds";
 import { t, inr } from "../theme";
 
 /* =========================================================
@@ -23,9 +27,6 @@ interface NewOrderAlertProps {
   onAccept: (orderId: string) => Promise<void> | void;
   soundEnabled: boolean;
   onToggleSound: (enabled: boolean) => void;
-  soundId: SoundId;
-  volume: number;
-  repeatSeconds: number;
   /** Fires the first time the browser lets audio through. */
   onAudioUnlocked?: () => void;
 }
@@ -39,9 +40,6 @@ export function NewOrderAlert({
   onAccept,
   soundEnabled,
   onToggleSound,
-  soundId,
-  volume,
-  repeatSeconds,
   onAudioUnlocked,
 }: NewOrderAlertProps) {
   const [accepting, setAccepting] = useState<string | null>(null);
@@ -52,12 +50,8 @@ export function NewOrderAlert({
   const current = orders[0];
   const queued = orders.length - 1;
 
-  const playChime = useCallback(() => {
-    playAlertSound(soundId, volume);
-  }, [soundId, volume]);
-
-  /* Browsers keep AudioContext suspended until the page has
-     been interacted with. These listeners are deliberately NOT
+  /* Browsers keep AudioContext suspended until the page has been
+     interacted with. These listeners are deliberately NOT
      `{ once: true }` — the first click can land before the
      context exists, and a one-shot listener would never retry. */
   useEffect(() => {
@@ -74,8 +68,9 @@ export function NewOrderAlert({
     };
   }, [onAudioUnlocked]);
 
-  /* Sound once per order id, then on a repeat while anything is
-     still waiting — a kitchen is noisy and one ping gets missed. */
+  /* Ring once per order id, then every few seconds while
+     anything is still waiting — a kitchen is noisy and one
+     ring gets missed. */
   useEffect(() => {
     if (!soundEnabled || orders.length === 0) {
       clearInterval(repeatRef.current);
@@ -86,14 +81,14 @@ export function NewOrderAlert({
 
     if (unseen.length > 0) {
       unseen.forEach((order) => announcedRef.current.add(order.id));
-      playChime();
+      playAlertSound();
     }
 
     clearInterval(repeatRef.current);
-    repeatRef.current = setInterval(playChime, Math.max(2, repeatSeconds) * 1000);
+    repeatRef.current = setInterval(playAlertSound, REPEAT_SECONDS * 1000);
 
     return () => clearInterval(repeatRef.current);
-  }, [orders, soundEnabled, playChime, repeatSeconds]);
+  }, [orders, soundEnabled]);
 
   useEffect(() => () => clearInterval(repeatRef.current), []);
 

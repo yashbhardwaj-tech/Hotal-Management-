@@ -12,9 +12,8 @@ import { db } from "../firebase/firebase";
 import { NewOrderAlert, type AlertOrder } from "./Neworderalert";
 import { BrandMark } from "./Brand";
 import { PortionEditor } from "./Portioneditor";
-import { SoundSettings } from "./SoundSettings";
 import { getPortions, type Portion } from "../utils/portions";
-import { unlockAudio, type SoundId } from "../utils/alertSounds";
+import { unlockAudio } from "../utils/alertSounds";
 import { t, globalCss, inr, emojiFor, FOOD_CATEGORIES } from "../theme";
 
 /* =========================================================
@@ -125,15 +124,6 @@ function Admin() {
     const [soundEnabled, setSoundEnabled] = useState(
         () => localStorage.getItem("hk_alert_sound") !== "off",
     );
-    const [soundId, setSoundId] = useState<SoundId>(
-        () => (localStorage.getItem("hk_sound_id") as SoundId) || "pips",
-    );
-    const [volume, setVolume] = useState(
-        () => Number(localStorage.getItem("hk_sound_volume")) || 1.6,
-    );
-    const [repeatSeconds, setRepeatSeconds] = useState(
-        () => Number(localStorage.getItem("hk_sound_repeat")) || 8,
-    );
 
     /* Browsers block audio until the page is interacted with.
        Until that happens the kitchen gets a silent alert, so say
@@ -153,29 +143,6 @@ function Admin() {
     );
 
     useEffect(() => () => clearTimeout(toastTimer.current), []);
-
-    const handleSoundChange = useCallback(
-        (next: { soundId?: SoundId; volume?: number; repeatSeconds?: number }) => {
-            if (next.soundId) {
-                setSoundId(next.soundId);
-                localStorage.setItem("hk_sound_id", next.soundId);
-            }
-
-            if (next.volume !== undefined) {
-                setVolume(next.volume);
-                localStorage.setItem("hk_sound_volume", String(next.volume));
-            }
-
-            if (next.repeatSeconds !== undefined) {
-                setRepeatSeconds(next.repeatSeconds);
-                localStorage.setItem("hk_sound_repeat", String(next.repeatSeconds));
-            }
-
-            /* Any of these came from a click, so audio is unlocked now */
-            if (unlockAudio()) setAudioReady(true);
-        },
-        [],
-    );
 
     /* =======================================================
        LIVE DATA — replaces the one-shot getDocs, so two staff
@@ -964,12 +931,6 @@ function Admin() {
 
                 {tab === "orders" && (
                     <>
-                        <SoundSettings
-                            soundId={soundId}
-                            volume={volume}
-                            repeatSeconds={repeatSeconds}
-                            onChange={handleSoundChange}
-                        />
 
                         <section style={s.panel}>
                             <div style={s.panelHead}>
@@ -1087,9 +1048,6 @@ function Admin() {
                     setSoundEnabled(next);
                     localStorage.setItem("hk_alert_sound", next ? "on" : "off");
                 }}
-                soundId={soundId}
-                volume={volume}
-                repeatSeconds={repeatSeconds}
                 onAudioUnlocked={() => setAudioReady(true)}
             />
 
