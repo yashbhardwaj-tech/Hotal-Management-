@@ -5,16 +5,21 @@ import {
     collection,
     deleteDoc,
     doc,
+    getDocs,
     onSnapshot,
+    query,
+    serverTimestamp,
     updateDoc,
+    where,
 } from "firebase/firestore";
 import { db } from "../firebase/firebase";
 import { NewOrderAlert, type AlertOrder } from "./Neworderalert";
 import { BrandMark } from "./Brand";
 import { PortionEditor } from "./Portioneditor";
+import { CategoryField } from "./Categoryfield";
 import { getPortions, type Portion } from "../utils/portions";
 import { unlockAudio } from "../utils/alertSounds";
-import { t, globalCss, inr, emojiFor, FOOD_CATEGORIES } from "../theme";
+import { t, globalCss, inr, emojiFor } from "../theme";
 
 /* =========================================================
    TYPES
@@ -92,6 +97,7 @@ function Admin() {
     /* ---- data ---- */
     const [foods, setFoods] = useState<Food[]>([]);
     const [orders, setOrders] = useState<Order[]>([]);
+    const [customCategories, setCustomCategories] = useState<string[]>([]);
     const [loadingFoods, setLoadingFoods] = useState(true);
     const [loadingOrders, setLoadingOrders] = useState(true);
 
@@ -183,6 +189,25 @@ function Admin() {
         return () => unsubscribe();
     }, [showToast]);
 
+    /* Categories you created. Kept in their own collection so a
+       category exists before any dish uses it. */
+    useEffect(() => {
+        const unsubscribe = onSnapshot(
+            collection(db, "categories"),
+            (snapshot) => {
+                setCustomCategories(
+                    snapshot.docs
+                        .map((d) => String(d.data().name || ""))
+                        .filter(Boolean)
+                        .sort((a, b) => a.localeCompare(b)),
+                );
+            },
+            (error) => console.error("Error loading categories:", error),
+        );
+
+        return () => unsubscribe();
+    }, []);
+
     useEffect(() => {
         const unsubscribe = onSnapshot(
             collection(db, "orders"),
@@ -243,13 +268,39 @@ function Admin() {
        DERIVED
     ======================================================= */
 
-    const categories = useMemo(() => {
-        const unique = [
+    /* Categories a dish already uses. Merged in below so that a
+       dish whose category doc was deleted doesn't disappear from
+       the filter and become unreachable. */
+    const usedCategories = useMemo(
+        () => [
             ...new Set(foods.map((f) => f.category).filter((c) => c.trim() !== "")),
-        ].sort();
+        ],
+        [foods],
+    );
 
-        return ["All", ...unique];
+    const allCategories = useMemo(
+        () =>
+            [...new Set([...customCategories, ...usedCategories])].sort((a, b) =>
+                a.localeCompare(b),
+            ),
+        [customCategories, usedCategories],
+    );
+
+    /* Dish count per category — an in-use category can't be removed */
+    const categoryUsage = useMemo(() => {
+        const counts: Record<string, number> = {};
+
+        foods.forEach((f) => {
+            if (f.category) counts[f.category] = (counts[f.category] ?? 0) + 1;
+        });
+
+        return counts;
     }, [foods]);
+
+    const filterCategories = useMemo(
+        () => ["All", ...allCategories],
+        [allCategories],
+    );
 
     const filteredFoods = useMemo(() => {
         const term = search.trim().toLowerCase();
@@ -303,6 +354,32 @@ function Admin() {
                 })),
         [orders],
     );
+
+    /* =======================================================
+       CATEGORIES
+    ======================================================= */
+
+    const createCategory = async (categoryName: string): Promise<void> => {
+        await addDoc(collection(db, "categories"), {
+            name: categoryName,
+            createdAt: serverTimestamp(),
+        });
+
+        showToast(`Category "${categoryName}" added.`);
+    };
+
+    const deleteCategory = async (categoryName: string): Promise<void> => {
+        /* Docs are keyed by auto-id, so find by name before deleting */
+        const matches = await getDocs(
+            query(collection(db, "categories"), where("name", "==", categoryName)),
+        );
+
+        await Promise.all(matches.docs.map((d) => deleteDoc(d.ref)));
+
+        if (selectedCategory === categoryName) setSelectedCategory("All");
+
+        showToast(`Category "${categoryName}" removed.`);
+    };
 
     /* =======================================================
        ORDER STATUS
@@ -388,7 +465,7 @@ function Admin() {
         }
 
         if (!category.trim()) {
-            showToast("Pick a category.", "error");
+            showToast("Pick or create a category.", "error");
             return;
         }
 
@@ -688,19 +765,18 @@ function Admin() {
                                             </Field>
 
                                             <Field label="Category">
-                                                <select
-                                                    className="inp"
+                                                <CategoryField
                                                     value={category}
-                                                    onChange={(e) => setCategory(e.target.value)}
-                                                    style={s.input}
-                                                >
-                                                    <option value="">Select a category</option>
-                                                    {FOOD_CATEGORIES.map((c) => (
-                                                        <option key={c} value={c}>
-                                                            {c}
-                                                        </option>
-                                                    ))}
-                                                </select>
+                                                    categories={allCategories}
+                                                    usage={categoryUsage}
+                                                    saving={savingFood}
+                                                    onChange={setCategory}
+                                                    onCreate={createCategory}
+                                                    onDelete={deleteCategory}
+                                                    onError={(message) =>
+                                                        showToast(message, "error")
+                                                    }
+                                                />
                                             </Field>
 
                                             <Field label="Availability">
@@ -823,7 +899,7 @@ function Admin() {
                                         onChange={(e) => setSelectedCategory(e.target.value)}
                                         style={s.filterSelect}
                                     >
-                                        {categories.map((c) => (
+                                        {filterCategories.map((c) => (
                                             <option key={c} value={c}>
                                                 {c}
                                             </option>
@@ -930,58 +1006,55 @@ function Admin() {
                 {/* ================= ORDERS TAB ================= */}
 
                 {tab === "orders" && (
-                    <>
-
-                        <section style={s.panel}>
-                            <div style={s.panelHead}>
-                                <div>
-                                    <h3 style={s.panelTitle}>Order queue</h3>
-                                    <p style={s.panelSub}>
-                                        Newest first · updates live from the guest app
-                                    </p>
-                                </div>
-
-                                <div style={s.filterRow}>
-                                    {(["Active", ...ORDER_STATUSES, "All"] as const).map((f) => (
-                                        <button
-                                            key={f}
-                                            type="button"
-                                            className="btn"
-                                            onClick={() => setOrderFilter(f)}
-                                            style={{
-                                                ...s.chip,
-                                                ...(orderFilter === f ? s.chipOn : {}),
-                                            }}
-                                        >
-                                            {f}
-                                        </button>
-                                    ))}
-                                </div>
+                    <section style={s.panel}>
+                        <div style={s.panelHead}>
+                            <div>
+                                <h3 style={s.panelTitle}>Order queue</h3>
+                                <p style={s.panelSub}>
+                                    Newest first · updates live from the guest app
+                                </p>
                             </div>
 
-                            {loadingOrders ? (
-                                <SkeletonRows />
-                            ) : filteredOrders.length === 0 ? (
-                                <Empty
-                                    icon="🧾"
-                                    title="Nothing in this queue"
-                                    text="Orders placed by guests land here the moment they're sent."
-                                />
-                            ) : (
-                                <div style={s.orderList}>
-                                    {filteredOrders.map((order) => (
-                                        <OrderRow
-                                            key={order.id}
-                                            order={order}
-                                            updating={updatingOrder === order.id}
-                                            onStatusChange={updateOrderStatus}
-                                            formatDate={formatDate}
-                                        />
-                                    ))}
-                                </div>
-                            )}
-                        </section>
-                    </>
+                            <div style={s.filterRow}>
+                                {(["Active", ...ORDER_STATUSES, "All"] as const).map((f) => (
+                                    <button
+                                        key={f}
+                                        type="button"
+                                        className="btn"
+                                        onClick={() => setOrderFilter(f)}
+                                        style={{
+                                            ...s.chip,
+                                            ...(orderFilter === f ? s.chipOn : {}),
+                                        }}
+                                    >
+                                        {f}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {loadingOrders ? (
+                            <SkeletonRows />
+                        ) : filteredOrders.length === 0 ? (
+                            <Empty
+                                icon="🧾"
+                                title="Nothing in this queue"
+                                text="Orders placed by guests land here the moment they're sent."
+                            />
+                        ) : (
+                            <div style={s.orderList}>
+                                {filteredOrders.map((order) => (
+                                    <OrderRow
+                                        key={order.id}
+                                        order={order}
+                                        updating={updatingOrder === order.id}
+                                        onStatusChange={updateOrderStatus}
+                                        formatDate={formatDate}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </section>
                 )}
             </main>
 
@@ -1592,6 +1665,7 @@ const s: Record<string, React.CSSProperties> = {
         display: "grid",
         gridTemplateColumns: "repeat(2, minmax(0,1fr))",
         gap: 16,
+        alignItems: "start",
     },
 
     field: { display: "block", marginBottom: 16 },

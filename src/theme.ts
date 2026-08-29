@@ -213,13 +213,3 @@ export const emojiFor = (
     food: { emoji?: string; category?: string } | undefined,
 ): string => food?.emoji || categoryEmoji[food?.category || ""] || "🍽️";
 
-export const FOOD_CATEGORIES = [
-    "Main Course",
-    "Rice",
-    "Breads",
-    "Drinks",
-    "Desserts",
-    "Starters",
-    "Breakfast",
-    "Other",
-];
