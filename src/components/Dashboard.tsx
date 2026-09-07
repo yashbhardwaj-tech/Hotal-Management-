@@ -28,6 +28,7 @@ import {
   type Portion,
 } from "../utils/portions";
 import { BrandMark } from "./Brand";
+import { Footer } from "./Footer";
 import { PortionPicker } from "./Portionpicker";
 import { t, globalCss, inr, emojiFor } from "../theme";
 
@@ -46,6 +47,9 @@ type Food = {
   category?: string;
   available: boolean;
   emoji?: string;
+  /* Written by the admin panel. Absent on older dishes, which
+     fall back to the emoji. */
+  imageUrl?: string;
   portions?: Portion[];
 };
 
@@ -208,6 +212,7 @@ function Dashboard() {
               category: data.category ? String(data.category) : undefined,
               available: Boolean(data.available),
               emoji: data.emoji ? String(data.emoji) : undefined,
+              imageUrl: data.imageUrl ? String(data.imageUrl) : undefined,
               portions: Array.isArray(data.portions)
                 ? (data.portions as Portion[])
                 : undefined,
@@ -625,7 +630,7 @@ function Dashboard() {
 
         <section className="hero" style={s.hero}>
           <div style={{ maxWidth: 520 }}>
-            <span style={s.heroEyebrow}>KITCHEN OPEN · 24 HOURS</span>
+            <span style={s.heroEyebrow}>KITCHEN OPEN · DELIVERY 24×7</span>
 
             <h2 style={s.heroTitle}>
               Good to see you, {displayName}.
@@ -634,7 +639,8 @@ function Dashboard() {
             </h2>
 
             <p style={s.heroText}>
-              Browse the menu and order — no account needed.
+              Delivery available 24×7. Browse the menu and order — no account
+              needed.
             </p>
           </div>
 
@@ -669,7 +675,7 @@ function Dashboard() {
                 <p style={s.sectionSub}>
                   {loadingFoods
                     ? "Fetching today's dishes"
-                    : `${filteredFoods.length} available now`}
+                    : `${filteredFoods.length} available now · delivery 24×7`}
                 </p>
               </div>
 
@@ -824,7 +830,17 @@ function Dashboard() {
                 <div className="thin" style={s.trayItems}>
                   {cart.map((item) => (
                     <div key={item.lineKey} style={s.trayItem}>
-                      <div style={s.trayIcon}>{emojiFor(item)}</div>
+                      <div style={s.trayIcon}>
+                        {item.imageUrl ? (
+                          <img
+                            src={item.imageUrl}
+                            alt=""
+                            style={s.trayIconImg}
+                          />
+                        ) : (
+                          emojiFor(item)
+                        )}
+                      </div>
 
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <h4 style={s.trayItemName}>
@@ -922,6 +938,10 @@ function Dashboard() {
           </aside>
         </div>
       </main>
+
+      {/* ================= FOOTER ================= */}
+
+      <Footer />
 
       {/* ================= SIZE PICKER ================= */}
 
@@ -1191,7 +1211,17 @@ function FoodCard({ food, onAdd }: FoodCardProps) {
   return (
     <article className="lift" style={s.foodCard}>
       <div style={s.foodImage}>
-        <span style={s.foodEmoji}>{emojiFor(food)}</span>
+        {food.imageUrl ? (
+          <img
+            src={food.imageUrl}
+            alt={food.Name || food.name || "Dish"}
+            loading="lazy"
+            style={s.foodPhoto}
+          />
+        ) : (
+          <span style={s.foodEmoji}>{emojiFor(food)}</span>
+        )}
+
         <span style={s.foodTag}>{food.category || "Chef's pick"}</span>
       </div>
 
@@ -1635,7 +1665,10 @@ const s: Record<string, CSSProperties> = {
     background: `radial-gradient(circle at 50% 40%, #FFFDF7, ${t.brassSoft})`,
     display: "grid",
     placeItems: "center",
+    overflow: "hidden",
   },
+
+  foodPhoto: { width: "100%", height: "100%", objectFit: "cover" },
 
   foodEmoji: { fontSize: 52 },
 
@@ -1926,7 +1959,10 @@ const s: Record<string, CSSProperties> = {
     display: "grid",
     placeItems: "center",
     fontSize: 21,
+    overflow: "hidden",
   },
+
+  trayIconImg: { width: "100%", height: "100%", objectFit: "cover" },
 
   trayItemName: {
     margin: 0,

@@ -18,6 +18,12 @@ import { BrandMark } from "./Brand";
 import { PortionEditor } from "./Portioneditor";
 import { CategoryField } from "./Categoryfield";
 import { getPortions, type Portion } from "../utils/portions";
+import {
+    deleteFoodImage,
+    uploadFoodImage,
+    validateImage,
+    type UploadedImage,
+} from "../utils/foodImages";
 import { unlockAudio } from "../utils/alertSounds";
 import { t, globalCss, inr, emojiFor } from "../theme";
 
@@ -33,6 +39,11 @@ type Food = {
     category: string;
     available: boolean;
     emoji?: string;
+    /* Public download URL, used for display */
+    imageUrl?: string;
+    /* Storage path, kept so replace and delete don't have to
+       parse the path back out of the encoded URL. */
+    imagePath?: string;
     portions?: Portion[];
 };
 
@@ -94,6 +105,17 @@ function Admin() {
     const [savingFood, setSavingFood] = useState(false);
     const [formOpen, setFormOpen] = useState(false);
 
+    /* ---- image ---- */
+    const [imageFile, setImageFile] = useState<File | null>(null);
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [existingImage, setExistingImage] = useState<{
+        url?: string;
+        path?: string;
+    }>({});
+    const [removeImage, setRemoveImage] = useState(false);
+    const [uploadPct, setUploadPct] = useState(0);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+
     /* ---- data ---- */
     const [foods, setFoods] = useState<Food[]>([]);
     const [orders, setOrders] = useState<Order[]>([]);
@@ -150,6 +172,20 @@ function Admin() {
 
     useEffect(() => () => clearTimeout(toastTimer.current), []);
 
+    /* Local preview of the chosen file. Revoked on change so the
+       blob doesn't sit in memory after the form is closed. */
+    useEffect(() => {
+        if (!imageFile) {
+            setPreviewUrl(null);
+            return;
+        }
+
+        const url = URL.createObjectURL(imageFile);
+        setPreviewUrl(url);
+
+        return () => URL.revokeObjectURL(url);
+    }, [imageFile]);
+
     /* =======================================================
        LIVE DATA — replaces the one-shot getDocs, so two staff
        members on two devices see the same board.
@@ -171,6 +207,12 @@ function Admin() {
                             category: String(data.category || ""),
                             available: Boolean(data.available),
                             emoji: data.emoji ? String(data.emoji) : undefined,
+                            imageUrl: data.imageUrl
+                                ? String(data.imageUrl)
+                                : undefined,
+                            imagePath: data.imagePath
+                                ? String(data.imagePath)
+                                : undefined,
                             portions: Array.isArray(data.portions)
                                 ? (data.portions as Portion[])
                                 : undefined,
@@ -412,6 +454,38 @@ function Admin() {
     );
 
     /* =======================================================
+       IMAGE
+    ======================================================= */
+
+    /* What the form should be showing right now: the newly picked
+       file wins, then the saved image, unless it's been cleared. */
+    const shownImage = previewUrl ?? (removeImage ? null : existingImage.url ?? null);
+
+    const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+
+        /* Cleared so picking the same file twice still fires onChange */
+        event.target.value = "";
+
+        if (!file) return;
+
+        const problem = validateImage(file);
+
+        if (problem) {
+            showToast(problem, "error");
+            return;
+        }
+
+        setImageFile(file);
+        setRemoveImage(false);
+    };
+
+    const clearImage = () => {
+        setImageFile(null);
+        if (existingImage.url) setRemoveImage(true);
+    };
+
+    /* =======================================================
        FORM
     ======================================================= */
 
@@ -423,6 +497,10 @@ function Admin() {
         setAvailable(true);
         setHasSizes(false);
         setPortions([]);
+        setImageFile(null);
+        setExistingImage({});
+        setRemoveImage(false);
+        setUploadPct(0);
         setEditingId(null);
     };
 
@@ -447,6 +525,9 @@ function Admin() {
         setAvailable(food.available);
         setHasSizes(existing.length > 0);
         setPortions(existing);
+        setImageFile(null);
+        setRemoveImage(false);
+        setExistingImage({ url: food.imageUrl, path: food.imagePath });
         setFormOpen(true);
 
         requestAnimationFrame(() =>
@@ -487,7 +568,16 @@ function Admin() {
 
         setSavingFood(true);
 
+        /* Tracked so a failed Firestore write doesn't leave the
+           uploaded file orphaned in Storage. */
+        let uploaded: UploadedImage | null = null;
+
         try {
+            if (imageFile) {
+                setUploadPct(1);
+                uploaded = await uploadFoodImage(imageFile, setUploadPct);
+            }
+
             const payload = {
                 Name: name.trim(),
                 description: description.trim(),
@@ -498,6 +588,16 @@ function Admin() {
                     : Number(price),
                 category: category.trim(),
                 available,
+                imageUrl: uploaded
+                    ? uploaded.imageUrl
+                    : removeImage
+                        ? null
+                        : existingImage.url ?? null,
+                imagePath: uploaded
+                    ? uploaded.imagePath
+                    : removeImage
+                        ? null
+                        : existingImage.path ?? null,
                 portions: hasSizes
                     ? validPortions.map((portion) => ({
                         label: portion.label.trim(),
@@ -508,6 +608,13 @@ function Admin() {
 
             if (editingId) {
                 await updateDoc(doc(db, "foods", editingId), payload);
+
+                /* The old file goes only after the document has stopped
+                   pointing at it — never the other way round. */
+                if ((uploaded || removeImage) && existingImage.path) {
+                    await deleteFoodImage(existingImage.path);
+                }
+
                 showToast(`${payload.Name} updated.`);
             } else {
                 await addDoc(collection(db, "foods"), payload);
@@ -518,9 +625,15 @@ function Admin() {
             setFormOpen(false);
         } catch (error) {
             console.error("Error saving food:", error);
+
+            /* Upload succeeded but the save didn't — take the file
+               back out so nothing is left behind. */
+            if (uploaded) await deleteFoodImage(uploaded.imagePath);
+
             showToast("Couldn't save the dish. Try again.", "error");
         } finally {
             setSavingFood(false);
+            setUploadPct(0);
         }
     };
 
@@ -535,6 +648,8 @@ function Admin() {
 
         try {
             await deleteDoc(doc(db, "foods", pendingDelete.id));
+            await deleteFoodImage(pendingDelete.imagePath);
+
             showToast(`${pendingDelete.Name} removed.`);
             setPendingDelete(null);
         } catch (error) {
@@ -813,6 +928,72 @@ function Admin() {
                                             />
                                         </Field>
 
+                                        {/* ---- Dish photo ----
+                                            A plain div rather than <Field>: the hidden file
+                                            input lives in here, and a <label> wrapper would
+                                            make every click inside open the file dialog. */}
+                                        <div style={s.field}>
+                                            <span style={s.label}>Dish photo</span>
+
+                                            <div style={s.imageRow}>
+                                                <div style={s.imageBox}>
+                                                    {shownImage ? (
+                                                        <img
+                                                            src={shownImage}
+                                                            alt=""
+                                                            style={s.imageThumb}
+                                                        />
+                                                    ) : (
+                                                        <span style={s.imagePlaceholder}>🖼️</span>
+                                                    )}
+                                                </div>
+
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <input
+                                                        ref={fileInputRef}
+                                                        type="file"
+                                                        accept="image/*"
+                                                        onChange={handleImageChange}
+                                                        style={{ display: "none" }}
+                                                    />
+
+                                                    <div style={s.imageButtons}>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-ghost"
+                                                            disabled={savingFood}
+                                                            onClick={() => fileInputRef.current?.click()}
+                                                            style={s.rowBtn}
+                                                        >
+                                                            {shownImage ? "Change photo" : "Choose photo"}
+                                                        </button>
+
+                                                        {shownImage && (
+                                                            <button
+                                                                type="button"
+                                                                className="btn"
+                                                                disabled={savingFood}
+                                                                onClick={clearImage}
+                                                                style={{
+                                                                    ...s.rowBtn,
+                                                                    color: t.red,
+                                                                    borderColor: "#EBD3D0",
+                                                                }}
+                                                            >
+                                                                Remove photo
+                                                            </button>
+                                                        )}
+                                                    </div>
+
+                                                    <p style={s.imageHint}>
+                                                        {savingFood && uploadPct > 0
+                                                            ? `Uploading… ${uploadPct}%`
+                                                            : "JPG or PNG, up to 5 MB. Optional — dishes without a photo show an emoji."}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         {/* ---- Half / full sizes ---- */}
                                         <div style={{ marginBottom: 16 }}>
                                             <PortionEditor
@@ -846,7 +1027,9 @@ function Admin() {
                                                 {savingFood ? (
                                                     <>
                                                         <span className="spin" style={s.btnSpinner} />
-                                                        Saving…
+                                                        {uploadPct > 0 && uploadPct < 100
+                                                            ? `Uploading ${uploadPct}%`
+                                                            : "Saving…"}
                                                     </>
                                                 ) : (
                                                     <>
@@ -931,7 +1114,18 @@ function Admin() {
                                                 className="row-hover food-row"
                                                 style={s.foodRow}
                                             >
-                                                <div style={s.foodIcon}>{emojiFor(food)}</div>
+                                                <div style={s.foodIcon}>
+                                                    {food.imageUrl ? (
+                                                        <img
+                                                            src={food.imageUrl}
+                                                            alt=""
+                                                            loading="lazy"
+                                                            style={s.foodIconImg}
+                                                        />
+                                                    ) : (
+                                                        emojiFor(food)
+                                                    )}
+                                                </div>
 
                                                 <div style={{ minWidth: 0, gridArea: "info" }}>
                                                     <div style={s.foodNameRow}>
@@ -1081,9 +1275,10 @@ function Admin() {
                         </h3>
 
                         <p style={s.modalText}>
-                            This deletes the dish permanently. Guests with it already in their
-                            tray will still be able to order it until they refresh. To take it
-                            off the menu without deleting, mark it hidden instead.
+                            This deletes the dish and its photo permanently. Guests with it
+                            already in their tray will still be able to order it until they
+                            refresh. To take it off the menu without deleting, mark it hidden
+                            instead.
                         </p>
 
                         <div style={s.modalActions}>
@@ -1727,6 +1922,35 @@ const s: Record<string, React.CSSProperties> = {
         color: t.text,
     },
 
+    /* ---------- Image picker ---------- */
+
+    imageRow: { display: "flex", alignItems: "center", gap: 14 },
+
+    imageBox: {
+        width: 86,
+        height: 86,
+        flexShrink: 0,
+        borderRadius: 13,
+        background: t.brassSoft,
+        border: `1px solid ${t.lineSoft}`,
+        display: "grid",
+        placeItems: "center",
+        overflow: "hidden",
+    },
+
+    imageThumb: { width: "100%", height: "100%", objectFit: "cover" },
+
+    imagePlaceholder: { fontSize: 26, opacity: 0.45 },
+
+    imageButtons: { display: "flex", gap: 8, flexWrap: "wrap" },
+
+    imageHint: {
+        margin: "9px 0 0",
+        fontSize: 11,
+        lineHeight: 1.5,
+        color: t.faint,
+    },
+
     toggle: {
         width: "100%",
         height: 44,
@@ -1864,7 +2088,10 @@ const s: Record<string, React.CSSProperties> = {
         display: "grid",
         placeItems: "center",
         fontSize: 24,
+        overflow: "hidden",
     },
+
+    foodIconImg: { width: "100%", height: "100%", objectFit: "cover" },
 
     foodNameRow: {
         display: "flex",
