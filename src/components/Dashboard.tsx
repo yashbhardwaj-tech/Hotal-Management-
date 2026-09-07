@@ -15,6 +15,7 @@ import { auth, db } from "../firebase/firebase";
 import {
   isAdmin,
   signInWithGoogle,
+  ensureUserDocument,
   getOrderOwnerId,
   loadDeliveryDetails,
   saveDeliveryDetails,
@@ -508,6 +509,8 @@ function Dashboard() {
 
     try {
       const current = user ?? (await signInWithGoogle());
+      await ensureUserDocument(current);
+
       const allowed = await isAdmin(current);
 
       if (allowed) {
