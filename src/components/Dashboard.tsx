@@ -28,6 +28,7 @@ import {
   lineId,
   type Portion,
 } from "../utils/portions";
+import { useIsMobile } from "../utils/useIsMobile";
 import { BrandMark } from "./Brand";
 import { Footer } from "./Footer";
 import { PortionPicker } from "./Portionpicker";
@@ -114,6 +115,7 @@ const emptyDetails: DeliveryDetails = {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
 
   const [user, setUser] = useState<User | null>(null);
   const [checkingAdmin, setCheckingAdmin] = useState(false);
@@ -137,6 +139,10 @@ function Dashboard() {
 
   /* Dish waiting on a size choice */
   const [pendingFood, setPendingFood] = useState<Food | null>(null);
+
+  /* On a phone the tray lives behind the header button rather
+     than at the bottom of a long scroll. */
+  const [trayOpen, setTrayOpen] = useState(false);
 
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [details, setDetails] = useState<DeliveryDetails>(emptyDetails);
@@ -189,6 +195,24 @@ function Dashboard() {
       /* Private mode or quota — not worth failing over */
     }
   }, [cart]);
+
+  /* The sheet is a phone-only surface. Rotating to landscape or
+     resizing a desktop window shouldn't strand it open. */
+  useEffect(() => {
+    if (!isMobile) setTrayOpen(false);
+  }, [isMobile]);
+
+  /* Stops the menu scrolling underneath the open sheet */
+  useEffect(() => {
+    if (!trayOpen) return;
+
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [trayOpen]);
 
   /* =====================================================
      FOODS
@@ -450,6 +474,8 @@ function Dashboard() {
       return;
     }
 
+    /* Two stacked overlays would trap scroll on a phone */
+    setTrayOpen(false);
     setTouched({});
     setCheckoutOpen(true);
   };
@@ -509,6 +535,10 @@ function Dashboard() {
 
     try {
       const current = user ?? (await signInWithGoogle());
+
+      /* A restored session skips signInWithGoogle, and with it the
+         document write. Called here so the doc exists whichever
+         branch we came through. */
       await ensureUserDocument(current);
 
       const allowed = await isAdmin(current);
@@ -529,7 +559,7 @@ function Dashboard() {
       } else if (code === "auth/popup-blocked") {
         showToast("Your browser blocked the sign-in window.", "error");
       } else {
-        console.error("Admin sign-in failed:", error);
+        console.error("Admin sign-in failed:", code, error);
         showToast("Couldn't sign you in. Try again.", "error");
       }
     } finally {
@@ -584,6 +614,27 @@ function Dashboard() {
           </div>
 
           <div style={s.headerRight}>
+            {/* The sidebar tray is off-screen on a phone, so the
+                count lives up here where it's visible from the menu. */}
+            {isMobile && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setTrayOpen(true)}
+                aria-label={`Open tray, ${totalItems} ${
+                  totalItems === 1 ? "item" : "items"
+                }`}
+                style={{
+                  ...s.cartButton,
+                  ...(totalItems > 0 ? s.cartButtonFull : {}),
+                }}
+              >
+                <span style={{ fontSize: 15 }}>🛒</span>
+
+                {totalItems > 0 && <span style={s.cartBadge}>{totalItems}</span>}
+              </button>
+            )}
+
             <button
               type="button"
               className="btn btn-ghost"
@@ -609,19 +660,23 @@ function Dashboard() {
                   )}
                 </div>
 
-                <div style={s.userText}>
-                  <strong style={s.userName}>
-                    {user.displayName?.split(" ")[0] || "Signed in"}
-                  </strong>
+                {/* Name and sign-out are the first things to go when
+                    the header gets tight. */}
+                {!isMobile && (
+                  <div style={s.userText}>
+                    <strong style={s.userName}>
+                      {user.displayName?.split(" ")[0] || "Signed in"}
+                    </strong>
 
-                  <button
-                    type="button"
-                    onClick={() => void signOut(auth)}
-                    style={s.signOut}
-                  >
-                    Sign out
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      onClick={() => void signOut(auth)}
+                      style={s.signOut}
+                    >
+                      Sign out
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -667,7 +722,15 @@ function Dashboard() {
           )}
         </section>
 
-        <div className="content-grid" style={s.contentGrid}>
+        <div
+          className="content-grid"
+          style={{
+            ...s.contentGrid,
+            gridTemplateColumns: isMobile
+              ? "minmax(0,1fr)"
+              : "minmax(0,1fr) 360px",
+          }}
+        >
           {/* ================= MENU ================= */}
 
           <section style={{ minWidth: 0 }}>
@@ -800,151 +863,85 @@ function Dashboard() {
             </section>
           </section>
 
-          {/* ================= TRAY ================= */}
+          {/* ================= TRAY — desktop sidebar ================= */}
 
-          <aside className="cart-panel" style={s.tray}>
-            <div style={s.trayHead}>
-              <div>
-                <h2 style={s.trayTitle}>Your Tray</h2>
-
-                <p style={s.traySub}>
-                  {totalItems === 0
-                    ? "Nothing selected"
-                    : `${totalItems} ${totalItems === 1 ? "item" : "items"} ready`}
-                </p>
-              </div>
-
-              {totalItems > 0 && <span style={s.trayCount}>{totalItems}</span>}
-            </div>
-
-            {cart.length === 0 ? (
-              <div style={s.trayEmpty}>
-                <div style={s.trayEmptyMark}>🍽️</div>
-
-                <h3 style={s.trayEmptyTitle}>Your tray is empty</h3>
-
-                <p style={s.trayEmptyText}>
-                  Add a dish from the menu and it will appear here, ready to
-                  send to the kitchen.
-                </p>
-              </div>
-            ) : (
-              <>
-                <div className="thin" style={s.trayItems}>
-                  {cart.map((item) => (
-                    <div key={item.lineKey} style={s.trayItem}>
-                      <div style={s.trayIcon}>
-                        {item.imageUrl ? (
-                          <img
-                            src={item.imageUrl}
-                            alt=""
-                            style={s.trayIconImg}
-                          />
-                        ) : (
-                          emojiFor(item)
-                        )}
-                      </div>
-
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <h4 style={s.trayItemName}>
-                          {item.Name || item.name || "Food Item"}
-                        </h4>
-
-                        <span style={s.trayItemPrice}>
-                          {item.portionLabel && (
-                            <span style={s.trayPortion}>
-                              {item.portionLabel} ·{" "}
-                            </span>
-                          )}
-                          {inr(item.unitPrice)} each
-                        </span>
-
-                        <div style={s.stepper}>
-                          <button
-                            type="button"
-                            className="btn"
-                            aria-label="Decrease quantity"
-                            onClick={() => setQuantity(item.lineKey, -1)}
-                            style={s.stepBtn}
-                          >
-                            −
-                          </button>
-
-                          <span style={s.stepValue}>{item.quantity}</span>
-
-                          <button
-                            type="button"
-                            className="btn"
-                            aria-label="Increase quantity"
-                            onClick={() => setQuantity(item.lineKey, 1)}
-                            style={s.stepBtn}
-                          >
-                            +
-                          </button>
-
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={() => removeItem(item.lineKey)}
-                            style={s.removeBtn}
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </div>
-
-                      <strong style={s.trayItemTotal}>
-                        {inr(item.unitPrice * item.quantity)}
-                      </strong>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={s.bill}>
-                  <div style={s.billRow}>
-                    <span>Subtotal</span>
-                    <strong style={{ color: t.text }}>{inr(totalPrice)}</strong>
-                  </div>
-
-                  <div style={s.billRow}>
-                    <span>Delivery</span>
-                    <span style={s.free}>FREE</span>
-                  </div>
-
-                  <div style={s.billLine} />
-
-                  <div style={s.totalRow}>
-                    <div>
-                      <span style={s.totalLabel}>Total</span>
-                      <small style={s.totalSub}>All charges included</small>
-                    </div>
-
-                    <strong style={s.totalAmount}>{inr(totalPrice)}</strong>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={openCheckout}
-                    style={s.placeButton}
-                  >
-                    <span>Continue to details</span>
-                    <span style={{ fontSize: 17 }}>→</span>
-                  </button>
-
-                  <p style={s.trayNote}>
-                    Name, phone and address needed at the next step
-                  </p>
-                </div>
-              </>
-            )}
-          </aside>
+          {!isMobile && (
+            <aside className="cart-panel" style={s.tray}>
+              <TrayPanel
+                cart={cart}
+                totalItems={totalItems}
+                totalPrice={totalPrice}
+                onQuantity={setQuantity}
+                onRemove={removeItem}
+                onCheckout={openCheckout}
+                showHeader
+              />
+            </aside>
+          )}
         </div>
       </main>
 
       {/* ================= FOOTER ================= */}
 
       <Footer />
+
+      {/* ================= TRAY — mobile sheet ================= */}
+
+      {isMobile && trayOpen && (
+        <div
+          style={s.sheetBackdrop}
+          role="presentation"
+          onClick={() => setTrayOpen(false)}
+        >
+          <div
+            className="fade-up"
+            style={s.sheet}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="tray-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={s.sheetHandle} />
+
+            <div style={s.sheetHead}>
+              <div>
+                <h2 id="tray-title" style={s.trayTitle}>
+                  Your Tray
+                </h2>
+
+                <p style={s.traySub}>
+                  {totalItems === 0
+                    ? "Nothing selected"
+                    : `${totalItems} ${
+                        totalItems === 1 ? "item" : "items"
+                      } ready`}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setTrayOpen(false)}
+                style={s.modalClose}
+                aria-label="Close tray"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={s.sheetBody}>
+              <TrayPanel
+                cart={cart}
+                totalItems={totalItems}
+                totalPrice={totalPrice}
+                onQuantity={setQuantity}
+                onRemove={removeItem}
+                onCheckout={openCheckout}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================= SIZE PICKER ================= */}
 
@@ -1154,6 +1151,169 @@ function Dashboard() {
 }
 
 /* =========================================================
+   TRAY PANEL
+   One body, two homes: the desktop sidebar and the mobile
+   sheet. Kept as a single component so the two can't drift.
+========================================================= */
+
+type TrayPanelProps = {
+  cart: CartItem[];
+  totalItems: number;
+  totalPrice: number;
+  onQuantity: (key: string, delta: number) => void;
+  onRemove: (key: string) => void;
+  onCheckout: () => void;
+  /* The sheet draws its own header with a close button */
+  showHeader?: boolean;
+};
+
+function TrayPanel({
+  cart,
+  totalItems,
+  totalPrice,
+  onQuantity,
+  onRemove,
+  onCheckout,
+  showHeader,
+}: TrayPanelProps) {
+  return (
+    <>
+      {showHeader && (
+        <div style={s.trayHead}>
+          <div>
+            <h2 style={s.trayTitle}>Your Tray</h2>
+
+            <p style={s.traySub}>
+              {totalItems === 0
+                ? "Nothing selected"
+                : `${totalItems} ${totalItems === 1 ? "item" : "items"} ready`}
+            </p>
+          </div>
+
+          {totalItems > 0 && <span style={s.trayCount}>{totalItems}</span>}
+        </div>
+      )}
+
+      {cart.length === 0 ? (
+        <div style={s.trayEmpty}>
+          <div style={s.trayEmptyMark}>🍽️</div>
+
+          <h3 style={s.trayEmptyTitle}>Your tray is empty</h3>
+
+          <p style={s.trayEmptyText}>
+            Add a dish from the menu and it will appear here, ready to send to
+            the kitchen.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="thin" style={s.trayItems}>
+            {cart.map((item) => (
+              <div key={item.lineKey} style={s.trayItem}>
+                <div style={s.trayIcon}>
+                  {item.imageUrl ? (
+                    <img src={item.imageUrl} alt="" style={s.trayIconImg} />
+                  ) : (
+                    emojiFor(item)
+                  )}
+                </div>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h4 style={s.trayItemName}>
+                    {item.Name || item.name || "Food Item"}
+                  </h4>
+
+                  <span style={s.trayItemPrice}>
+                    {item.portionLabel && (
+                      <span style={s.trayPortion}>{item.portionLabel} · </span>
+                    )}
+                    {inr(item.unitPrice)} each
+                  </span>
+
+                  <div style={s.stepper}>
+                    <button
+                      type="button"
+                      className="btn"
+                      aria-label="Decrease quantity"
+                      onClick={() => onQuantity(item.lineKey, -1)}
+                      style={s.stepBtn}
+                    >
+                      −
+                    </button>
+
+                    <span style={s.stepValue}>{item.quantity}</span>
+
+                    <button
+                      type="button"
+                      className="btn"
+                      aria-label="Increase quantity"
+                      onClick={() => onQuantity(item.lineKey, 1)}
+                      style={s.stepBtn}
+                    >
+                      +
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => onRemove(item.lineKey)}
+                      style={s.removeBtn}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+
+                <strong style={s.trayItemTotal}>
+                  {inr(item.unitPrice * item.quantity)}
+                </strong>
+              </div>
+            ))}
+          </div>
+
+          <div style={s.bill}>
+            <div style={s.billRow}>
+              <span>Subtotal</span>
+              <strong style={{ color: t.text }}>{inr(totalPrice)}</strong>
+            </div>
+
+            <div style={s.billRow}>
+              <span>Delivery</span>
+              <span style={s.free}>FREE</span>
+            </div>
+
+            <div style={s.billLine} />
+
+            <div style={s.totalRow}>
+              <div>
+                <span style={s.totalLabel}>Total</span>
+                <small style={s.totalSub}>All charges included</small>
+              </div>
+
+              <strong style={s.totalAmount}>{inr(totalPrice)}</strong>
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onCheckout}
+              style={s.placeButton}
+            >
+              <span>Continue to details</span>
+              <span style={{ fontSize: 17 }}>→</span>
+            </button>
+
+            <p style={s.trayNote}>
+              Name, phone and address needed at the next step
+            </p>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/* =========================================================
    FIELD
 ========================================================= */
 
@@ -1215,12 +1375,24 @@ function FoodCard({ food, onAdd }: FoodCardProps) {
     <article className="lift" style={s.foodCard}>
       <div style={s.foodImage}>
         {food.imageUrl ? (
-          <img
-            src={food.imageUrl}
-            alt={food.Name || food.name || "Dish"}
-            loading="lazy"
-            style={s.foodPhoto}
-          />
+          /* The photo is shown whole rather than cropped, so tall
+             and wide shots both survive. The blurred copy behind
+             fills the leftover margin instead of a bare band. */
+          <>
+            <img
+              src={food.imageUrl}
+              alt=""
+              aria-hidden="true"
+              style={s.foodPhotoBackdrop}
+            />
+
+            <img
+              src={food.imageUrl}
+              alt={food.Name || food.name || "Dish"}
+              loading="lazy"
+              style={s.foodPhoto}
+            />
+          </>
         ) : (
           <span style={s.foodEmoji}>{emojiFor(food)}</span>
         )}
@@ -1453,7 +1625,42 @@ const s: Record<string, CSSProperties> = {
     color: t.faint,
   },
 
-  headerRight: { display: "flex", alignItems: "center", gap: 14 },
+  headerRight: { display: "flex", alignItems: "center", gap: 10 },
+
+  /* ---------- Mobile cart button ---------- */
+
+  cartButton: {
+    position: "relative",
+    height: 38,
+    minWidth: 42,
+    padding: "0 12px",
+    borderRadius: 11,
+    background: t.surface,
+    border: `1px solid ${t.line}`,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+
+  cartButtonFull: { background: t.brassSoft, borderColor: t.brass },
+
+  cartBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    minWidth: 19,
+    height: 19,
+    padding: "0 5px",
+    borderRadius: 20,
+    background: t.brass,
+    color: "#fff",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 10.5,
+    fontWeight: 800,
+    border: "2px solid #F7F4ED",
+  },
 
   adminButton: {
     height: 36,
@@ -1468,6 +1675,7 @@ const s: Record<string, CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 8,
+    flexShrink: 0,
   },
 
   adminDot: { width: 6, height: 6, borderRadius: "50%", background: t.brass },
@@ -1493,6 +1701,7 @@ const s: Record<string, CSSProperties> = {
     fontWeight: 700,
     fontSize: 14,
     overflow: "hidden",
+    flexShrink: 0,
   },
 
   avatarImg: { width: "100%", height: "100%", objectFit: "cover" },
@@ -1570,7 +1779,6 @@ const s: Record<string, CSSProperties> = {
 
   contentGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(0,1fr) 360px",
     gap: 30,
     alignItems: "start",
   },
@@ -1581,6 +1789,7 @@ const s: Record<string, CSSProperties> = {
     justifyContent: "space-between",
     gap: 16,
     marginBottom: 18,
+    flexWrap: "wrap",
   },
 
   sectionTitle: {
@@ -1613,6 +1822,7 @@ const s: Record<string, CSSProperties> = {
     borderRadius: 10,
     padding: "0 12px",
     width: 220,
+    maxWidth: "100%",
   },
 
   searchIcon: { color: t.faint, fontSize: 16 },
@@ -1663,7 +1873,7 @@ const s: Record<string, CSSProperties> = {
   },
 
   foodImage: {
-    height: 128,
+    height: 150,
     position: "relative",
     background: `radial-gradient(circle at 50% 40%, #FFFDF7, ${t.brassSoft})`,
     display: "grid",
@@ -1671,7 +1881,25 @@ const s: Record<string, CSSProperties> = {
     overflow: "hidden",
   },
 
-  foodPhoto: { width: "100%", height: "100%", objectFit: "cover" },
+  /* Blurred, cropped copy behind the real photo, so the
+     letterbox margins read as intentional rather than broken. */
+  foodPhotoBackdrop: {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    filter: "blur(16px)",
+    transform: "scale(1.25)",
+    opacity: 0.5,
+  },
+
+  foodPhoto: {
+    position: "relative",
+    width: "100%",
+    height: "100%",
+    objectFit: "contain",
+  },
 
   foodEmoji: { fontSize: 52 },
 
@@ -1760,7 +1988,7 @@ const s: Record<string, CSSProperties> = {
     overflow: "hidden",
   },
 
-  skelImage: { height: 128, borderRadius: 0 },
+  skelImage: { height: 150, borderRadius: 0 },
 
   orderList: { display: "flex", flexDirection: "column", gap: 14 },
 
@@ -1873,6 +2101,8 @@ const s: Record<string, CSSProperties> = {
   trackLine: { flex: 1, height: 2, marginTop: 11, background: t.lineSoft },
 
   trackLineOn: { background: t.brass },
+
+  /* ---------- Tray ---------- */
 
   tray: {
     position: "sticky",
@@ -1987,21 +2217,23 @@ const s: Record<string, CSSProperties> = {
 
   stepper: { display: "flex", alignItems: "center", gap: 7, marginTop: 8 },
 
+  /* Slightly larger than the old 24px — these are thumb targets
+     on the sheet now, not just mouse targets. */
   stepBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 7,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     background: t.surface,
     border: `1px solid ${t.line}`,
     color: t.text,
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 1,
   },
 
   stepValue: {
-    minWidth: 16,
+    minWidth: 18,
     textAlign: "center",
-    fontSize: 11.5,
+    fontSize: 12,
     fontWeight: 800,
   },
 
@@ -2083,6 +2315,50 @@ const s: Record<string, CSSProperties> = {
     color: t.faint,
   },
 
+  /* ---------- Mobile tray sheet ---------- */
+
+  sheetBackdrop: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 70,
+    background: "rgba(18,36,30,.45)",
+    backdropFilter: "blur(3px)",
+    display: "flex",
+    alignItems: "flex-end",
+  },
+
+  sheet: {
+    width: "100%",
+    maxHeight: "88vh",
+    display: "flex",
+    flexDirection: "column",
+    background: t.surface,
+    borderRadius: "20px 20px 0 0",
+    boxShadow: "0 -14px 50px rgba(0,0,0,.28)",
+    overflow: "hidden",
+  },
+
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    margin: "10px auto 0",
+    borderRadius: 4,
+    background: t.line,
+    flexShrink: 0,
+  },
+
+  sheetHead: {
+    padding: "14px 22px 16px",
+    borderBottom: `1px solid ${t.lineSoft}`,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 14,
+    flexShrink: 0,
+  },
+
+  sheetBody: { flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch" },
+
   /* ---------- Checkout ---------- */
 
   backdrop: {
@@ -2128,8 +2404,8 @@ const s: Record<string, CSSProperties> = {
   modalSub: { margin: "4px 0 0", fontSize: 12.5, color: t.faint },
 
   modalClose: {
-    width: 30,
-    height: 30,
+    width: 32,
+    height: 32,
     flexShrink: 0,
     borderRadius: 9,
     background: t.surfaceAlt,
