@@ -621,9 +621,8 @@ function Dashboard() {
                 type="button"
                 className="btn"
                 onClick={() => setTrayOpen(true)}
-                aria-label={`Open tray, ${totalItems} ${
-                  totalItems === 1 ? "item" : "items"
-                }`}
+                aria-label={`Open tray, ${totalItems} ${totalItems === 1 ? "item" : "items"
+                  }`}
                 style={{
                   ...s.cartButton,
                   ...(totalItems > 0 ? s.cartButtonFull : {}),
@@ -912,9 +911,8 @@ function Dashboard() {
                 <p style={s.traySub}>
                   {totalItems === 0
                     ? "Nothing selected"
-                    : `${totalItems} ${
-                        totalItems === 1 ? "item" : "items"
-                      } ready`}
+                    : `${totalItems} ${totalItems === 1 ? "item" : "items"
+                    } ready`}
                 </p>
               </div>
 
@@ -1375,26 +1373,16 @@ function FoodCard({ food, onAdd }: FoodCardProps) {
     <article className="lift" style={s.foodCard}>
       <div style={s.foodImage}>
         {food.imageUrl ? (
-          /* The photo is shown whole rather than cropped, so tall
-             and wide shots both survive. The blurred copy behind
-             fills the leftover margin instead of a bare band. */
-          <>
-            <img
-              src={food.imageUrl}
-              alt=""
-              aria-hidden="true"
-              style={s.foodPhotoBackdrop}
-            />
-
-            <img
-              src={food.imageUrl}
-              alt={food.Name || food.name || "Dish"}
-              loading="lazy"
-              style={s.foodPhoto}
-            />
-          </>
+          <img
+            src={food.imageUrl}
+            alt={food.Name || food.name || "Dish"}
+            loading="lazy"
+            style={s.foodPhoto}
+          />
         ) : (
-          <span style={s.foodEmoji}>{emojiFor(food)}</span>
+          <div style={s.foodEmojiWrap}>
+            <span style={s.foodEmoji}>{emojiFor(food)}</span>
+          </div>
         )}
 
         <span style={s.foodTag}>{food.category || "Chef's pick"}</span>
@@ -1873,40 +1861,55 @@ const s: Record<string, CSSProperties> = {
   },
 
   foodImage: {
-    height: 150,
     position: "relative",
+    width: "100%",
+    height: 250,
     background: `radial-gradient(circle at 50% 40%, #FFFDF7, ${t.brassSoft})`,
-    display: "grid",
-    placeItems: "center",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
     overflow: "hidden",
   },
 
-  /* Blurred, cropped copy behind the real photo, so the
-     letterbox margins read as intentional rather than broken. */
   foodPhotoBackdrop: {
     position: "absolute",
-    inset: 0,
+    top: 0,
+    left: 0,
     width: "100%",
     height: "100%",
     objectFit: "cover",
-    filter: "blur(16px)",
-    transform: "scale(1.25)",
-    opacity: 0.5,
+    filter: "blur(20px)",
+    transform: "scale(1.1)",
+    opacity: 0.25,
   },
 
   foodPhoto: {
     position: "relative",
+    display: "block",
     width: "100%",
     height: "100%",
     objectFit: "contain",
+    objectPosition: "center",
+    zIndex: 1,
   },
 
-  foodEmoji: { fontSize: 52 },
+  foodEmojiWrap: {
+    width: "100%",
+    height: 250,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  foodEmoji: {
+    fontSize: 52,
+  },
 
   foodTag: {
     position: "absolute",
     top: 11,
     left: 11,
+    zIndex: 10,
     padding: "4px 8px",
     borderRadius: 6,
     background: "rgba(255,255,255,.9)",
